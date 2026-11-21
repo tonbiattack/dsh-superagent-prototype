@@ -320,7 +320,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/autopilot.ts` | The autopilot service: the polling loop, one tick that polls then schedules, and the `autopilot` health entry |
 | `src/app/autopilot-queue.ts` | `AutopilotQueue`: the durable job records, one per repository and issue, and the only writer of them |
 | `src/app/autopilot-poller.ts` | `AutopilotPoller`: reads each watched repository's open issues through the agent's `gh`, queues the eligible ones, and skips a queued job whose issue closed or lost its label |
-| `src/app/autopilot-scheduler.ts` | `AutopilotScheduler`: starts queued jobs within the limits by handing their Trigger to the Engine, and records what became of the Tickets |
+| `src/app/autopilot-scheduler.ts` | `AutopilotScheduler`: starts queued jobs within the limits by handing their Trigger to the Engine, delivers a ready Ticket's branch, and records what became of the Tickets |
+| `src/app/autopilot-delivery.ts` | `Delivery`: pushes a job's branch, opens or reuses its pull request, and merges it only when `mergeVerdict` allows; never force-pushes and never bypasses branch protection |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
@@ -422,7 +423,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
 | `tests/autopilot.spec.ts` | The autopilot's rules: eligibility by label and allowed author, the queue's capacity and order, the branch a job commits to, and the refusal to commit to the default branch |
-| `tests/autopilot-queue.spec.ts` | The autopilot's durable queue, its poller and its scheduler on a real Store: deduplication across polls and restarts, a repository's failure leaving the others alone, dispatch within the limits, and the outcome recorded from the Ticket |
+| `tests/autopilot-queue.spec.ts` | The autopilot's durable queue, its poller and its scheduler on a real Store: deduplication across polls and restarts, a repository's failure leaving the others alone, dispatch within the limits, delivery of a ready Ticket, and the outcome recorded from the Ticket |
+| `tests/autopilot-delivery.spec.ts` | Delivery: the merge rules (checks, approvals, conflicts, branch protection) and the calls that push, open, reuse and merge a pull request |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |

@@ -48,11 +48,14 @@ import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 import { AutopilotQueue } from './autopilot-queue.ts'
 import { AutopilotPoller } from './autopilot-poller.ts'
-import { AutopilotScheduler } from './autopilot-scheduler.ts'
+import { AutopilotScheduler, branchOf } from './autopilot-scheduler.ts'
 import { Autopilot } from './autopilot.ts'
+import { Delivery, type DeliveryResult } from './autopilot-delivery.ts'
+import { defaultBranchOf } from './autopilot-poller.ts'
 import { autopilotTrigger } from '../sources/github-trigger.ts'
 import { readIssue } from '../sources/github-read.ts'
 import type { AutopilotJob } from '../autopilot.ts'
+import { latestReport } from '../core/index.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -179,7 +182,8 @@ export class Runtime extends Service implements SourceHost {
         allowed: () => (store.settings().policy.sources.github?.allowed ?? []).map(entry => entry.id),
         settings: () => store.settings().autopilot })
       const scheduler = new AutopilotScheduler({ store, queue, receive: trigger => passes.receive(trigger),
-        trigger: job => this.autopilotTrigger(job), paused: () => this.paused(), closing: () => this.closing() })
+        trigger: job => this.autopilotTrigger(job), deliver: (job, ticket) => this.autopilotDeliver(job, ticket),
+        paused: () => this.paused(), closing: () => this.closing() })
       this.autopilot = new Autopilot({ store, queue, poller, scheduler, health: board.claim('autopilot'),
         lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing(),
         requestPass: () => { passes.request() } })
@@ -223,6 +227,19 @@ export class Runtime extends Service implements SourceHost {
     const labels = (issue as { labels?: { name: string }[] }).labels?.map(label => label.name) ?? []
     if (!labels.some(label => label.toLowerCase() === settings.eligibleLabel.toLowerCase())) return undefined
     return autopilotTrigger(issue, settings.eligibleLabel, this.setup.deployment.github.login)
+  }
+  /**
+   * Delivers a finished job's work: pushes its branch, opens its pull request and merges it when the rules allow.
+   * The branch is the Ticket's short name under `agent/`, which is what binds the pull request back to the Ticket.
+   */
+  private async autopilotDeliver(job: AutopilotJob, ticket: Ticket): Promise<DeliveryResult> {
+    const commands = this.commands.forRepository(job.repository)
+    const branch = `agent/${ticket.execution?.name ?? branchOf(job)}`
+    const delivery = new Delivery({ commands, settings: () => this.store.settings().autopilot,
+      defaultBranch: () => defaultBranchOf(commands),
+      headSha: async (directory, ref) => (await commands.git(['rev-parse', ref], directory)).trim() || undefined })
+    return delivery.deliver({ repository: job.repository, issue: job.issue, branch, directory: ticket.execution?.directory ?? '',
+      summary: latestReport(ticket)?.summary ?? '' })
   }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }

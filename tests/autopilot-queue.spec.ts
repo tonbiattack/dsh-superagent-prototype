@@ -7,6 +7,7 @@ import { Store } from '../src/app/store.ts'
 import { AutopilotQueue } from '../src/app/autopilot-queue.ts'
 import { AutopilotPoller, eligibleIssue, labelNames } from '../src/app/autopilot-poller.ts'
 import { AutopilotScheduler } from '../src/app/autopilot-scheduler.ts'
+import type { DeliveryResult } from '../src/app/autopilot-delivery.ts'
 import { AutopilotConfigSchema, SettingsSchema } from '../src/policy.ts'
 import type { Commands } from '../src/infra/commands.ts'
 import type { Trigger } from '../src/core/index.ts'
@@ -179,13 +180,30 @@ describe('autopilot poller', () => {
 })
 
 describe('autopilot scheduler', () => {
+  /** Records the accept Decision and the Ticket it created, as the Engine does when the main Session accepts. */
+  const acceptTicket = (ticketId: string, triggerId: string) => {
+    store.decisions.save({ id: `d-${ticketId}`, evalId: `e-${ticketId}`, threadKey: 'github:7', triggerIds: [triggerId], policyVersion: 'v',
+      at: '2026-01-01T00:00:00Z', kind: 'accept', reason: [], strength: 'explicit', ticketId })
+    store.tickets.save({ id: ticketId, title: 'Issue 7', decisionId: `d-${ticketId}`, mandate: { strength: 'explicit', policyVersion: 'v',
+      basis: { via: 'autopilot', label: 'autopilot', issue: 7 }, actor: { source: 'github', id: 'alice' }, scope: 'fix' },
+      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+      origin: { triggerId, triggerIds: [triggerId] } })
+  }
+  /** Records a ready report on a Ticket's running Assignment, which is when delivery may run. */
+  const reportReady = (ticketId: string) => {
+    const ticket = store.tickets.get(ticketId)!
+    store.tickets.save({ ...ticket, assignments: [{ id: `a-${ticketId}`, state: 'running', createdAt: '2026-01-01T00:00:00Z',
+      report: { state: 'ready', summary: 'Reworked the parser.', at: '2026-01-01T00:30:00Z' } }] })
+  }
   const scheduler = (patch: Record<string, unknown> = {}, trigger: (job: { issue: number }) => Promise<Trigger | undefined> = async job => ({
     id: `trigger-${job.issue}`, source: 'github', threads: [{ source: 'github', id: String(job.issue) }], actor: { source: 'github', id: 'alice' },
-    human: true, at: '2026-01-01T00:00:00Z', text: 'Fix it', meta: { number: job.issue, autopilot: 'autopilot' } })) => {
+    human: true, at: '2026-01-01T00:00:00Z', text: 'Fix it', meta: { number: job.issue, autopilot: 'autopilot' } }),
+    deliver: (job: { issue: number }) => Promise<DeliveryResult> = async () => ({ pushed: true, commitSha: 'sha', prNumber: 5,
+      prUrl: 'https://github.com/owner/one/pull/5', mergeSha: 'merge-sha' })) => {
     const queue = new AutopilotQueue(store)
     // The Engine stores a Trigger as it receives it, which is what the scheduler reads back.
     const receive = vi.fn((value: Trigger) => { store.triggers.save(value); return 'stored' })
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, paused: () => false, closing: () => false })
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, paused: () => false, closing: () => false })
     store.saveSettings(SettingsSchema.parse({ autopilot: settings(patch) }))
     return { queue, pass, receive }
   }
@@ -201,7 +219,8 @@ describe('autopilot scheduler', () => {
     const queue = new AutopilotQueue(store)
     const receive = vi.fn()
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger: async () => undefined, paused: () => true, closing: () => false })
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger: async () => undefined, deliver: async () => ({ pushed: false }),
+      paused: () => true, closing: () => false })
     queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
     expect((await pass.pass()).started).toEqual([])
     expect(receive).not.toHaveBeenCalled()
@@ -286,5 +305,45 @@ describe('autopilot scheduler', () => {
     const before = queue.get('owner/one', 7)!
     await pass.pass()
     expect(queue.get('owner/one', 7)).toMatchObject({ state: 'running', attempts: before.attempts })
+  })
+  it('delivers a ready Ticket\'s work once, and records the pull request and merge commit', async () => {
+    const { queue, pass } = scheduler()
+    queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
+    await pass.pass()
+    acceptTicket('t1', 'trigger-7')
+    reportReady('t1')
+    await pass.pass()
+    expect(queue.get('owner/one', 7)).toMatchObject({ state: 'running', ticketId: 't1', branch: 'agent/issue-7', commitSha: 'sha',
+      prNumber: 5, prUrl: 'https://github.com/owner/one/pull/5', mergeSha: 'merge-sha' })
+  })
+  it('delivers only once, so a repeated pass opens no second pull request', async () => {
+    const deliver = vi.fn(async () => ({ pushed: true, prNumber: 5 }))
+    const { queue, pass } = scheduler({}, undefined, deliver)
+    queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
+    await pass.pass()
+    acceptTicket('t1', 'trigger-7')
+    reportReady('t1')
+    await pass.pass()
+    await pass.pass()
+    expect(deliver).toHaveBeenCalledOnce()
+  })
+  it('records why delivery stopped short of merging, and keeps the job running so a later pass retries', async () => {
+    const { queue, pass } = scheduler({}, undefined, async () => ({ pushed: true, prNumber: 5, blocked: 'required checks are still running: build' }))
+    queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
+    await pass.pass()
+    acceptTicket('t1', 'trigger-7')
+    reportReady('t1')
+    await pass.pass()
+    expect(queue.get('owner/one', 7)).toMatchObject({ state: 'running', prNumber: 5, error: 'required checks are still running: build' })
+  })
+  it('records a delivery failure on the job without losing the Ticket', async () => {
+    const { queue, pass } = scheduler({}, undefined, async () => { throw new Error('the push was rejected') })
+    queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
+    await pass.pass()
+    acceptTicket('t1', 'trigger-7')
+    reportReady('t1')
+    const result = await pass.pass()
+    expect(result.errors.map(item => item.error)).toEqual(['the push was rejected'])
+    expect(queue.get('owner/one', 7)).toMatchObject({ state: 'running', ticketId: 't1', error: 'the push was rejected' })
   })
 })
