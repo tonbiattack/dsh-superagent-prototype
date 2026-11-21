@@ -1,7 +1,6 @@
-# Issue drafts — enable GitHub Issues before publishing
+# Original issue planning notes
 
-GitHub API currently returns HTTP 410: "Issues has been disabled in this repository."
-Enable Settings > General > Features > Issues, then create these five issues. Full behavior and acceptance criteria: [spec](./009-issue-autopilot-fork.md).
+The five issues have now been created. Issue #3 and [the specification](./009-issue-autopilot-fork.md) supersede the initial commit-only proposal below.
 
 ## 1. feat: autopilotラベル付きIssueの自動検知とキュー登録
 - 既存GitHub Source/Policyを再利用し、許可ユーザーの `autopilot` ラベル付きOpen Issueを60秒間隔で検知
@@ -18,14 +17,14 @@ Enable Settings > General > Features > Issues, then create these five issues. Fu
 - 単一repo設定との後方互換、異常repoの隔離
 - テスト: 2repo以上・失敗時隔離・設定移行
 
-## 3. feat: PRを作成しない検証・ローカルコミット完了モード
+## 3. feat: Issue実装からPR作成・検証・自動マージまで完結する
 - 各Issueを専用branch/worktreeで実装
 - Issue・AGENTS.md・関連仕様を読み、テスト→最大3回修正
-- 成功時に関連変更だけをコミットしSHAを保存
-- PRなし、pushなし、auto-closeなしが初期設定
+- 成功時に関連変更をコミット・pushしPRを作成
+- 必須チェックとブランチ保護が満たされた場合にsquash merge
+- コンフリクト/チェック失敗/必須承認不足ではマージせず報告
 - default branchへの直接コミット、force pushは禁止
-- 失敗時には変更を保持、未検証を成功扱いしない
-- テスト: no PR/no push/no default writeを保証
+- テスト: 二重PR・二重マージ防止、ポリシー順守
 
 ## 4. feat: 中断・再起動復旧と二重実行防止
 - 既存Ticket永続化の再利用
