@@ -1,7 +1,7 @@
 # Fork customization specification — Issue-driven autonomous coding
 
 ## Goal
-Extend the upstream research prototype to monitor selected GitHub repositories and automatically implement opt-in issues in local DSH sessions. No manual per-issue command and no pull request required.
+Extend the upstream research prototype to monitor selected GitHub repositories and automatically implement opt-in issues in local DSH sessions. No manual per-issue command; each completed job creates a pull request and automatically merges it after required verification.
 
 ## Upstream reuse
 Keep existing GitHub Source, Policy, Ticket/Executor, isolated sessions/work directories, persistence, panel, and permission boundaries. Before editing, inspect docs/001-domain.md, 002-authorization.md, 003-execution.md, 004-prompts.md, 006-deployment.md, 007-architecture.md and associated tests. Maintain upstream compatibility wherever feasible.
@@ -13,8 +13,8 @@ Keep existing GitHub Source, Policy, Ticket/Executor, isolated sessions/work dir
 4. Deduplicate by repository immutable ID + issue ID + event/revision as appropriate. Durable queue; at most one running job per repository, initially one global job by default. Prioritize oldest eligible issues.
 5. Create Ticket and isolated branch/worktree/session using upstream Executor; read issue text and repository instructions (AGENTS.md, README, related docs). Treat issue body as untrusted input.
 6. Implement and run configured validation. Retry corrections at most 3 times. Missing/unverifiable checks must be stated, never silently passed.
-7. Commit only related files in issue branch (e.g. `agent/issue-123`). Never directly commit to default branch. By default no PR, no push, no auto-close, no force push. Optional push is explicit opt-in.
-8. Persist Ticket, commit SHA, result and error; expose state in existing panel. Optional issue comment is opt-in.
+7. Commit only related files on an isolated issue branch (e.g. `agent/issue-123`), push the branch, create a PR targeting the repository's default branch, then automatically merge using the GitHub API after validations and branch protection requirements pass. Never directly commit to default branch or force push. If checks are missing or fail, approvals are required, or conflicts exist, leave PR open and report blocker; never bypass branch protection.
+8. Persist Ticket, commit SHA, PR number/URL, merge SHA, result and error; expose state in existing panel. Issue comments and auto-close are configurable; GitHub may automatically close linked issues on merge.
 9. On restart, reconcile running Tickets, git status and commit SHA to prevent duplicate execution or commit; resume only safe, known steps. Expose manual pause/resume/skip.
 
 ## GitHub labels
@@ -35,8 +35,12 @@ execution:
   maxConcurrentPerRepo: 1
   maxFixAttempts: 3
 delivery:
-  createPullRequest: false
-  autoPush: false
+  createPullRequest: true
+  autoPush: true
+  autoMerge: true
+  mergeMethod: squash
+  requireRequiredChecks: true
+  respectBranchProtection: true
   autoCloseIssue: false
   autoComment: false
 safety:
@@ -45,7 +49,7 @@ safety:
 ```
 
 ## Non-goals
-No new hosted service, webhook requirement, CI requirement, model failover, auto-merge, or direct changes to upstream except necessary extensions.
+No new hosted service, webhook requirement, mandatory GitHub Actions workflows, model failover, or direct changes to upstream except necessary extensions. If a repository has required CI checks, wait for them before merging.
 
 ## Acceptance criteria
 - Adding an eligible issue to one monitored repo starts a job without manual prompt.
@@ -53,8 +57,9 @@ No new hosted service, webhook requirement, CI requirement, model failover, auto
 - Repeated polling/restart does not duplicate Tickets or commits.
 - New eligible issues are queued while the first job runs.
 - At least two repositories can be monitored and scheduled independently.
-- Success results in tested, isolated local commit and no PR/push/default-branch edit.
-- Failure preserves changes and displays actionable explanation.
+- Success results in tested isolated changes, pushed issue branch, created PR and automatically merged PR, with the merge SHA saved. No direct default-branch commits.
+- Failed tests, unresolved conflicts, missing required checks, unmet required approval, or failed push/merge leave PR unmerged and show an actionable explanation.
+- Existing PRs are reused on retry; no duplicate PRs or merge attempts. GitHub branch protection and required reviewers must never be bypassed.
 - `pnpm check` succeeds, with tests added for policy, polling, dedupe, scheduler, delivery and restart.
 - Installation steps for Windows + WSL2 are documented.
 
@@ -62,5 +67,5 @@ No new hosted service, webhook requirement, CI requirement, model failover, auto
 1. Safety and local baseline/characterization tests.
 2. Label-based watch + durable queue.
 3. Multi-repository configuration and routing.
-4. Commit-only delivery and validation.
+4. PR creation, validation and safe automatic merge.
 5. Recovery, status panel and operator documentation.
