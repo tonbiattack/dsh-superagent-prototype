@@ -715,6 +715,7 @@ const TEXT = {
   'userError.noAnswer': ['执行器还没有回答这条人发的触发。请等待执行器的报告，或用 orchestrator_ticket_request_status 请求一份（它只对处于等待状态的执行器起作用）；普通进展不能当作回答。', USER_ERRORS.noAnswer[1]],
   'userError.noChannel': ['这个工单或触发没有可以回复的渠道。', USER_ERRORS.noChannel[1]],
   'userError.panelOnlyEnvironment': ['执行环境（执行目录、准备命令、禁止调用的命令）只能在管理页修改。', USER_ERRORS.panelOnlyEnvironment[1]],
+  'userError.panelOnlyAutopilot': ['自动实现的仓库与交付开关（PR、推送、合并、分支保护）只能在管理页修改。', USER_ERRORS.panelOnlyAutopilot[1]],
   'userError.panelOnlyAccounts': ['部署检查读取的来源字段（例如账号 CLI）只能在管理页修改。', USER_ERRORS.panelOnlyAccounts[1]],
   'userError.setupComplete': ['部署检查已通过。', USER_ERRORS.setupComplete[1]],
   'userError.modelUnavailable': ['{block} 的模型不可用：{error}', USER_ERRORS.modelUnavailable[1]],
@@ -746,6 +747,7 @@ const TEXT = {
   'healthCode.feishuCliUnset': ['来源已打开，还没有设置机器人的 lark-cli', HEALTH_TEXT.feishuCliUnset],
   'healthCode.feishuBotMissing': ['等待飞书机器人', HEALTH_TEXT.feishuBotMissing],
   'healthCode.pollFailures': ['连续 {count} 次轮询失败，最近一次：{error}', HEALTH_TEXT.pollFailures],
+  'healthCode.autopilotOff': ['自动实现已关闭，或没有监视任何仓库', HEALTH_TEXT.autopilotOff],
 } as const satisfies Record<string, readonly [string, string]>
 export type DshSuperagentKey = keyof typeof TEXT
 const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>

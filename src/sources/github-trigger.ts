@@ -88,6 +88,17 @@ export function issueTrigger(issue: Opened, agent: string): Trigger {
     channel: githubChannel(issue.number, issue.html_url), url: issue.html_url, meta: { number: issue.number, isPr: false, kind: 'issue' } }
 }
 /**
+ * Builds the trigger for an Issue the autopilot took up because it carries the eligibility label.
+ * Its ID names the label and the issue's update time, so a re-labelled or edited issue is a new Trigger while a repeated
+ * poll of the same revision is a duplicate; `meta.autopilot` is what the gate reads as the addressing.
+ */
+export function autopilotTrigger(issue: Opened & { updated_at?: string | null }, label: string, agent: string): Trigger {
+  const base = issueTrigger(issue, agent)
+  const revision = issue.updated_at ?? issue.created_at
+  return { ...base, id: key('github-autopilot', String(issue.number), label, revision),
+    meta: { ...base.meta, autopilot: label, revision } }
+}
+/**
  * Builds the trigger for a newly opened PR's title and description.
  * PR and Issue numbers share one sequence in GitHub and never collide, so this reuses `issueTrigger`'s `github-issue` ID format.
  */

@@ -46,6 +46,13 @@ import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+import { AutopilotQueue } from './autopilot-queue.ts'
+import { AutopilotPoller } from './autopilot-poller.ts'
+import { AutopilotScheduler } from './autopilot-scheduler.ts'
+import { Autopilot } from './autopilot.ts'
+import { autopilotTrigger } from '../sources/github-trigger.ts'
+import { readIssue } from '../sources/github-read.ts'
+import type { AutopilotJob } from '../autopilot.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -70,6 +77,8 @@ export class Runtime extends Service implements SourceHost {
   readonly outbox: Outbox
   readonly engine: Engine
   readonly passes: Passes
+  readonly autopilotQueue: AutopilotQueue
+  readonly autopilot: Autopilot
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
@@ -163,6 +172,17 @@ export class Runtime extends Service implements SourceHost {
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
+      // The autopilot reads issues through the agent's gh, restricted to each repository it watches, and dispatches a
+      // job's Trigger through the same Engine path a person's request takes.
+      const queue = this.autopilotQueue = new AutopilotQueue(store)
+      const poller = new AutopilotPoller({ store, queue, commands: repository => commands.forRepository(repository),
+        allowed: () => (store.settings().policy.sources.github?.allowed ?? []).map(entry => entry.id),
+        settings: () => store.settings().autopilot })
+      const scheduler = new AutopilotScheduler({ store, queue, receive: trigger => passes.receive(trigger),
+        trigger: job => this.autopilotTrigger(job), paused: () => this.paused(), closing: () => this.closing() })
+      this.autopilot = new Autopilot({ store, queue, poller, scheduler, health: board.claim('autopilot'),
+        lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing(),
+        requestPass: () => { passes.request() } })
       this.ready = this.initialize()
     } catch (error) {
       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
@@ -191,6 +211,19 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  /**
+   * Builds the Trigger a queued job dispatches: the issue as it reads now, carrying the eligibility label the operator
+   * configured. Returns undefined when the issue closed or lost the label, so the job is skipped rather than started.
+   */
+  private async autopilotTrigger(job: AutopilotJob): Promise<Trigger | undefined> {
+    const settings = this.store.settings().autopilot
+    const commands = this.commands.forRepository(job.repository)
+    const issue = await readIssue(commands, job.issue)
+    if (issue.state !== 'open' || issue.pull_request != null) return undefined
+    const labels = (issue as { labels?: { name: string }[] }).labels?.map(label => label.name) ?? []
+    if (!labels.some(label => label.toLowerCase() === settings.eligibleLabel.toLowerCase())) return undefined
+    return autopilotTrigger(issue, settings.eligibleLabel, this.setup.deployment.github.login)
+  }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
@@ -214,6 +247,7 @@ export class Runtime extends Service implements SourceHost {
     this.executor.resume()
     this.passes.start()
     this.effects.start()
+    this.autopilot.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   private httpHost(): HttpHost {
@@ -235,6 +269,8 @@ export class Runtime extends Service implements SourceHost {
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
+      // The autopilot's loop stops with the lifetime; waiting for it keeps a poll from writing after the Store closes.
+      await this.autopilot.stop()
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
       this.executor.dispose()

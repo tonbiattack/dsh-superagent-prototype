@@ -96,15 +96,46 @@ export const ExecutorConfigSchema = z.object({
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+/** A repository the autopilot watches, with the local checkout its work runs in. */
+export const AutopilotRepositorySchema = z.object({
+  fullName: z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'owner/name'),
+  checkout: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for the ticket directory').default(''),
+}).strict()
+/**
+ * Issue-driven autopilot settings: which repositories to watch, which label makes an issue eligible, how many jobs run
+ * at once, and what delivery does with a finished job. Delivery defaults to the safe side: a pull request that is merged
+ * only when every requirement holds, and no direct commit to the default branch.
+ */
+export const AutopilotConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  repositories: z.array(AutopilotRepositorySchema).max(LIMITS.autopilotRepositories)
+    .refine(list => new Set(list.map(entry => entry.fullName.toLowerCase())).size === list.length, 'Duplicate repositories').default([]),
+  eligibleLabel: z.string().trim().min(1).max(LIMITS.autopilotLabel).default('autopilot'),
+  pollSeconds: z.number().int().min(LIMITS.autopilotPollSeconds.min).max(LIMITS.autopilotPollSeconds.max).default(60),
+  maxConcurrentGlobal: z.number().int().min(LIMITS.autopilotMaxConcurrentGlobal.min).max(LIMITS.autopilotMaxConcurrentGlobal.max).default(1),
+  maxConcurrentPerRepo: z.number().int().min(LIMITS.autopilotMaxConcurrentPerRepo.min).max(LIMITS.autopilotMaxConcurrentPerRepo.max).default(1),
+  maxFixAttempts: z.number().int().min(LIMITS.autopilotMaxFixAttempts.min).max(LIMITS.autopilotMaxFixAttempts.max).default(3),
+  createPullRequest: z.boolean().default(true),
+  autoPush: z.boolean().default(true),
+  autoMerge: z.boolean().default(true),
+  mergeMethod: z.enum(['squash', 'merge', 'rebase']).default('squash'),
+  requireRequiredChecks: z.boolean().default(true),
+  respectBranchProtection: z.boolean().default(true),
+  autoCloseIssue: z.boolean().default(false),
+  autoComment: z.boolean().default(false),
+  requireAllowedActor: z.boolean().default(true),
+  disallowDefaultBranchCommit: z.boolean().default(true),
+}).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourceInstanceSchema).default({}),
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
+  autopilot: AutopilotConfigSchema.default(() => AutopilotConfigSchema.parse({})),
 }).strict()
 export type Settings = z.infer<typeof SettingsSchema>
-export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
+export type SettingsBlock = 'policy' | 'eval' | 'executor' | 'autopilot' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
 export type SettingsOrigin = 'panel' | 'tool' | 'sync'
 
@@ -126,6 +157,22 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
 }
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
+/**
+ * The basis of an issue the autopilot opted in by label, or undefined when the Trigger is not one.
+ * The Source records the label it matched in the Trigger's `meta.autopilot`, so the gate needs no GitHub call: an issue
+ * carries the label only while the poller saw it, and a later poll that finds it gone stops the job.
+ */
+function autopilotBasis(trigger: Trigger, settings: Settings, allowed: z.infer<typeof AllowedSchema> | undefined):
+  { via: 'autopilot'; label: string; issue: number } | undefined {
+  const label = trigger.meta.autopilot
+  if (typeof label !== 'string' || !label) return undefined
+  if (!settings.autopilot.enabled) return undefined
+  // The label is the addressing, so the author must be on the list; the poller checks this too, and the gate is the authority.
+  if (settings.autopilot.requireAllowedActor && !allowed) return undefined
+  const issue = Number(trigger.meta.number)
+  if (!Number.isInteger(issue) || issue <= 0) return undefined
+  return { via: 'autopilot', label, issue }
+}
 
 /** Check whether a thread has tickets of its own (excluding context-only subscriptions). */
 const participating = (thread: Thread, tickets: Ticket[]): boolean =>
@@ -194,6 +241,9 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const scope = listened(sources, trigger.source, trigger.meta)
       const row = scope.listened ? scope.row : undefined
       const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row }, ...allowed ? { sender: senderName(allowed) } : {} }
+      // An issue an operator opted in by label is an explicit request from a sender on the list, without the agent being addressed.
+      const opted = autopilotBasis(trigger, settings, allowed)
+      if (opted) return { admissible: true, strength: 'explicit', basis: { ...recorded, ...opted } }
       if (allowed && trigger.addressed) return { admissible: true, strength: 'explicit', basis: { ...recorded, via: 'addressed', addressed: trigger.addressed } }
       const cell = admissionCell(!!allowed, !!trigger.addressed)!
       // Unaddressed messages only use the admission table when the Source observes all messages in that scope.
@@ -219,6 +269,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const rulesOn = (rules: string[] | undefined) => (rules ?? []).every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id))
       // Explicit follow-ups remain valid; inferred follow-ups require auto mode and enabled matched rules.
       if (basis.via === 'followup') return mandate.strength === 'explicit' || (mode === 'auto' && rulesOn(basis.rules))
+      // An autopilot Mandate holds while the autopilot is on and its author may still originate work.
+      if (basis.via === 'autopilot') return settings.autopilot.enabled && (!settings.autopilot.requireAllowedActor || !!allowedSender(settings, mandate.actor))
       // A bot's candidate holds only while the bot remains on its Source's bot list and passes the observation checks below.
       if (basis.via === 'bot' && !listedBot(settings, mandate.actor)) return false
       // An admission-table Mandate holds while the sender's current cell still grants at least the original strength.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
+import { AutopilotConfigSchema, SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -85,6 +85,35 @@ describe('gate', () => {
     expect(policy.gate(feishu({ human: false }), thread(), [])).toEqual({ admissible: false, reason: 'not_human' })
     expect(policy.gate(feishu({ actor: { source: 'feishu', id: 'ou_guest' } }), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
     expect(policy.gate(unaddressed({ meta: { chatId: CHAT, direct: false, mentioned: false } }), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
+  })
+})
+describe('autopilot gate', () => {
+  const opted = (login = 'Alice', patch: Record<string, unknown> = {}): Trigger => ({ ...github(login), meta: { number: 7, isPr: false, autopilot: 'autopilot' }, ...patch })
+  const on = (patch: Record<string, unknown> = {}) => setup(SettingsSchema.parse({ ...base, autopilot: { enabled: true, ...patch } }))
+  it('admits an issue an operator opted in by label as an explicit request from a listed author, without the agent being addressed', () => {
+    expect(on().policy.gate(opted(), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { via: 'autopilot', label: 'autopilot', issue: 7, source: 'github', sender: 'Alice' } })
+  })
+  it('admits nothing while the autopilot is off, so the label alone starts no work', () => {
+    expect(policy.gate(opted(), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
+  })
+  it('admits nothing for an author who may not originate work', () => {
+    expect(on().policy.gate(opted('stranger'), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
+  })
+  it('admits an unlisted author when the operator turns the allowed-actor check off', () => {
+    expect(on({ requireAllowedActor: false }).policy.gate(opted('stranger'), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit' })
+  })
+  it('leaves an issue without the label to the ordinary rules', () => {
+    const plain: Trigger = { ...github('Alice'), meta: { number: 7, isPr: false } }
+    expect(on().policy.gate(plain, thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
+  })
+  it('keeps an autopilot Mandate while the autopilot is on and its author may still originate work', () => {
+    const mandate = { strength: 'explicit' as const, policyVersion: 'v', actor: { source: 'github', id: 'Alice' }, scope: 'fix',
+      basis: { via: 'autopilot' as const, label: 'autopilot', issue: 7, source: 'github' } }
+    expect(on().policy.revalidate(mandate)).toBe(true)
+    expect(policy.revalidate(mandate)).toBe(false)
+    expect(on({ requireAllowedActor: false }).policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(true)
+    expect(on().policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(false)
   })
 })
 describe('admission table', () => {
@@ -255,6 +284,7 @@ describe('settings migration', () => {
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
       executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
+      autopilot: AutopilotConfigSchema.parse({}),
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })
