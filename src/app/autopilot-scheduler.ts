@@ -54,7 +54,7 @@ export class AutopilotScheduler {
     // Fail closed until the executor can bind every ticket, worktree and GitHub operation to its
     // immutable repository identity. Dispatching now could run an issue in the wrong checkout.
     for (const job of this.host.queue.all().filter(item => item.state === 'queued')) {
-      this.host.queue.update(job.repository, job.issue, { error: 'Dispatch disabled: repository isolation and host-verified delivery are not implemented' })
+      this.host.queue.update(job.repositoryId, job.issue, { error: 'Dispatch disabled: repository isolation and host-verified delivery are not implemented' })
     }
     return result
   }
@@ -64,19 +64,19 @@ export class AutopilotScheduler {
    */
   private async start(job: AutopilotJob): Promise<AutopilotJob | undefined> {
     // One process runs a job at a time; a job another process holds, or whose checkout cannot hold a lock, waits.
-    if (!this.host.locks.tryAcquire(job.repository, job.issue, this.host.checkout(job))) return undefined
+    if (!this.host.locks.tryAcquire(job.repositoryId, job.issue, this.host.checkout(job))) return undefined
     // The work must run in this repository's own checkout, proven before anything is dispatched.
     await this.host.verify(job)
     const trigger = await this.host.trigger(job)
     if (!trigger) {
-      this.host.queue.update(job.repository, job.issue, { state: 'skipped', error: 'the issue is no longer open or no longer carries the label' })
-      await this.host.locks.release(job.repository, job.issue)
+      this.host.queue.update(job.repositoryId, job.issue, { state: 'skipped', error: 'the issue is no longer open or no longer carries the label' })
+      await this.host.locks.release(job.repositoryId, job.issue)
       return undefined
     }
     // The attempt is counted before the Trigger is handed over, so a crash between the two cannot retry without bound.
-    this.host.queue.update(job.repository, job.issue, { state: 'running', triggerId: trigger.id, attempts: job.attempts + 1, error: undefined })
+    this.host.queue.update(job.repositoryId, job.issue, { state: 'running', triggerId: trigger.id, attempts: job.attempts + 1, error: undefined })
     this.host.receive(trigger)
-    return this.host.queue.get(job.repository, job.issue)
+    return this.host.queue.get(job.repositoryId, job.issue)
   }
   /**
    * Brings running jobs in step with their Tickets: records the Ticket once the accept created it, delivers the work once
@@ -90,26 +90,26 @@ export class AutopilotScheduler {
       if (!ticket) {
         // The Trigger may still wait for its Eval; only a job whose Trigger is gone is a failure.
         if (job.triggerId && !this.host.store.triggers.get(job.triggerId)) {
-          this.host.queue.update(job.repository, job.issue, { state: 'failed', error: 'the ticket for this issue is gone' })
-          result.settled.push(this.host.queue.get(job.repository, job.issue)!)
+          this.host.queue.update(job.repositoryId, job.issue, { state: 'failed', error: 'the ticket for this issue is gone' })
+          result.settled.push(this.host.queue.get(job.repositoryId, job.issue)!)
         }
         continue
       }
-      if (ticket.id !== job.ticketId) this.host.queue.update(job.repository, job.issue, { ticketId: ticket.id })
+      if (ticket.id !== job.ticketId) this.host.queue.update(job.repositoryId, job.issue, { ticketId: ticket.id })
       // A worker's free-form report is not independently verifiable proof of a passing test run.
       // Until validation and repository isolation are enforced by the host, never push or merge on this basis.
       if (ready(ticket)) {
-        this.host.queue.update(job.repository, job.issue, { error: 'Automatic delivery is disabled: host-verified tests and repository isolation are not implemented' })
+        this.host.queue.update(job.repositoryId, job.issue, { error: 'Automatic delivery is disabled: host-verified tests and repository isolation are not implemented' })
         continue
       }
       if (liveTicket(ticket)) continue
       const outcome = ticket.ended?.outcome
       const state = outcome === 'completed' || outcome === 'merged' ? 'done' : outcome === 'dropped' ? 'skipped' : 'failed'
       const error = state === 'failed' ? ticket.ended?.reason ?? `the ticket ended ${outcome ?? 'without a result'}` : undefined
-      this.host.queue.update(job.repository, job.issue, { state, ...error === undefined ? {} : { error } })
+      this.host.queue.update(job.repositoryId, job.issue, { state, ...error === undefined ? {} : { error } })
       // A settled job holds no lock: its work is over, and the next issue may start at once.
-      await this.host.locks.release(job.repository, job.issue)
-      result.settled.push(this.host.queue.get(job.repository, job.issue)!)
+      await this.host.locks.release(job.repositoryId, job.issue)
+      result.settled.push(this.host.queue.get(job.repositoryId, job.issue)!)
     }
   }
   /**
@@ -125,10 +125,10 @@ export class AutopilotScheduler {
       const facts = await this.host.facts(job, ticket)
       const decision = recover(job, facts)
       decisions.push({ job, action: decision.action, reason: decision.reason })
-      if (decision.action === 'settle') this.host.queue.update(job.repository, job.issue, { state: decision.state, error: undefined })
-      else if (decision.action === 'fail') this.host.queue.update(job.repository, job.issue, { state: 'failed', error: decision.reason })
-      else if (decision.action === 'requeue') this.host.queue.update(job.repository, job.issue, { state: 'queued' })
-      else if (decision.action === 'wait') this.host.queue.update(job.repository, job.issue, { error: decision.reason })
+      if (decision.action === 'settle') this.host.queue.update(job.repositoryId, job.issue, { state: decision.state, error: undefined })
+      else if (decision.action === 'fail') this.host.queue.update(job.repositoryId, job.issue, { state: 'failed', error: decision.reason })
+      else if (decision.action === 'requeue') this.host.queue.update(job.repositoryId, job.issue, { state: 'queued' })
+      else if (decision.action === 'wait') this.host.queue.update(job.repositoryId, job.issue, { error: decision.reason })
       // A resume leaves the job running: the Executor's own recovery continues its Ticket.
     }
     return decisions
@@ -139,17 +139,17 @@ export class AutopilotScheduler {
    */
   private async deliver(job: AutopilotJob, ticket: Ticket, result: DispatchResult): Promise<void> {
     // Delivery holds the job's lock too, so a second process cannot push or merge the same branch beside it.
-    if (!this.host.locks.tryAcquire(job.repository, job.issue, this.host.checkout(job))) return
+    if (!this.host.locks.tryAcquire(job.repositoryId, job.issue, this.host.checkout(job))) return
     try {
       const delivered = await this.host.deliver(job, ticket)
-      this.host.queue.update(job.repository, job.issue, { branch: job.branch ?? branchOf(job), commitSha: delivered.commitSha,
+      this.host.queue.update(job.repositoryId, job.issue, { branch: job.branch ?? branchOf(job), commitSha: delivered.commitSha,
         ...delivered.prNumber === undefined ? {} : { prNumber: delivered.prNumber }, ...delivered.prUrl === undefined ? {} : { prUrl: delivered.prUrl },
         ...delivered.mergeSha === undefined ? {} : { mergeSha: delivered.mergeSha }, ...delivered.blocked === undefined ? {} : { error: delivered.blocked } })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.host.queue.update(job.repository, job.issue, { error: message })
+      this.host.queue.update(job.repositoryId, job.issue, { error: message })
       result.errors.push({ job, error: message })
-    } finally { await this.host.locks.release(job.repository, job.issue) }
+    } finally { await this.host.locks.release(job.repositoryId, job.issue) }
   }
   /** The Ticket a job's Trigger started, open or ended, or undefined while no accept has created one. */
   private ticketOf(job: AutopilotJob): Ticket | undefined {

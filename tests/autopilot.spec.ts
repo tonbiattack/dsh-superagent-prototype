@@ -5,8 +5,8 @@ import { active, branchAllowed, eligible, hasCapacity, ineligibleReason, jobBran
   terminal, type AutopilotJob } from '../src/autopilot.ts'
 
 const settings = (patch: Record<string, unknown> = {}) => AutopilotConfigSchema.parse({ enabled: true, repositories: [{ fullName: 'owner/one', checkout: '/srv/one' }], ...patch })
-const job = (issue: number, patch: Partial<AutopilotJob> = {}): AutopilotJob => ({ repository: 'owner/one', issue, state: 'queued', attempts: 0,
-  createdAt: `2026-01-01T00:00:${String(issue).padStart(2, '0')}Z`, updatedAt: '2026-01-01T00:00:00Z', ...patch })
+const job = (issue: number, patch: Partial<AutopilotJob> = {}): AutopilotJob => ({ repository: 'owner/one', repositoryId: 11, issue, state: 'queued',
+  attempts: 0, createdAt: `2026-01-01T00:00:${String(issue).padStart(2, '0')}Z`, updatedAt: '2026-01-01T00:00:00Z', ...patch })
 const issue = (patch: Record<string, unknown> = {}) => ({ repository: 'owner/one', issue: 7, title: 'Fix it', author: 'alice', url: 'https://github.com/owner/one/issues/7',
   createdAt: '2026-01-01T00:00:00Z', labels: ['autopilot'], ...patch })
 
@@ -36,9 +36,9 @@ describe('autopilot eligibility', () => {
 })
 
 describe('autopilot queue', () => {
-  it('keys a job by repository and issue, so the same number in two repositories is two jobs', () => {
-    expect(jobKey('owner/one', 7)).toBe('owner/one#7')
-    expect(jobKey('owner/two', 7)).not.toBe(jobKey('owner/one', 7))
+  it('keys a job by the repository\'s immutable ID and the issue, so a rename keeps it and two repositories differ', () => {
+    expect(jobKey(11, 7)).toBe('11#7')
+    expect(jobKey(12, 7)).not.toBe(jobKey(11, 7))
   })
   it('compares repository names without regard to case', () => {
     expect(sameRepo('Owner/One', 'owner/one')).toBe(true)

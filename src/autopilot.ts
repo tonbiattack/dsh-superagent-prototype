@@ -11,13 +11,14 @@ export const TERMINAL: readonly AutopilotState[] = ['done', 'failed', 'skipped']
 /** States that hold a worker slot. */
 export const ACTIVE: readonly AutopilotState[] = ['queued', 'running']
 /**
- * One issue's work, currently keyed by repository name and issue number. This is not rename-safe;
- * immutable repository and issue IDs must become the key before dispatch is enabled.
+ * One issue's work. The key is GitHub's immutable repository ID and the issue number, so renaming a repository keeps its
+ * jobs; `repository` is the name to call, which a poll refreshes.
  */
 export interface AutopilotJob {
   repository: string
   issue: number
-  repositoryId?: number
+  /** GitHub's immutable repository ID, which survives a rename and is the job's key. */
+  repositoryId: number
   state: AutopilotState
   /** The Trigger the job created, once dispatched; its Ticket is the work. */
   triggerId?: string
@@ -40,8 +41,11 @@ export interface AutopilotJob {
 export interface AutopilotRepository { fullName: string; checkout: string }
 /** The autopilot settings a job is scheduled under. */
 export type AutopilotSettings = Settings['autopilot']
-/** Prototype key: repository name and issue number. Renaming a repository changes this key. */
-export const jobKey = (repository: string, issue: number): string => `${repository.toLowerCase()}#${issue}`
+/**
+ * The key of a job: GitHub's immutable repository ID and the issue number. A repository rename changes its name but not
+ * its ID, so a job keeps its identity across one; the name is only what the job is called.
+ */
+export const jobKey = (repositoryId: number, issue: number): string => `${repositoryId}#${issue}`
 /** The branch a job commits to; the last path segment is the Ticket's short name, which binds a pull request to it. */
 export const jobBranch = (issue: number): string => `agent/issue-${issue}`
 /** Whether a job still needs work: queued or running. */

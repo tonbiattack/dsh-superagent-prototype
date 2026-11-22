@@ -51,8 +51,8 @@ export class JobLocks {
    * @param onCompromised - called when the lock is lost, such as when its file is removed; the holder must then stop
    * working on the job, because another process may have taken it.
    */
-  tryAcquire(repository: string, issue: number, checkout: string, onCompromised?: (error: Error) => void): Held | undefined {
-    const key = jobKey(repository, issue)
+  tryAcquire(repositoryId: number, issue: number, checkout: string, onCompromised?: (error: Error) => void): Held | undefined {
+    const key = jobKey(repositoryId, issue)
     const existing = this.held.get(key)
     if (existing) return existing
     const directory = lockDirectory(checkout)
@@ -60,7 +60,7 @@ export class JobLocks {
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
       // The lock file itself is the lock; `realpath: false` lets it be created on first use.
-      const release = lockSync(join(directory, `${repository.replace(/[^A-Za-z0-9_.-]/g, '_')}-issue-${issue}.lock`),
+      const release = lockSync(join(directory, `${repositoryId}-issue-${issue}.lock`),
         { stale: STALE_MS, realpath: false, onCompromised: error => {
           // A lost lock is never silently ignored: this process no longer owns the job.
           this.held.delete(key)
@@ -77,10 +77,10 @@ export class JobLocks {
     }
   }
   /** Whether this process holds a job's lock. */
-  holds(repository: string, issue: number): boolean { return this.held.has(jobKey(repository, issue)) }
+  holds(repositoryId: number, issue: number): boolean { return this.held.has(jobKey(repositoryId, issue)) }
   /** Releases a job's lock, if this process holds it. */
-  async release(repository: string, issue: number): Promise<void> {
-    const key = jobKey(repository, issue)
+  async release(repositoryId: number, issue: number): Promise<void> {
+    const key = jobKey(repositoryId, issue)
     const held = this.held.get(key)
     if (!held) return
     this.held.delete(key)
@@ -90,8 +90,8 @@ export class JobLocks {
   /** Releases every lock this process holds, which shutdown does. */
   async releaseAll(): Promise<void> {
     await Promise.all([...this.held.keys()].map(key => {
-      const [repository = '', issue = '0'] = key.split('#')
-      return this.release(repository, Number(issue))
+      const [repositoryId = '0', issue = '0'] = key.split('#')
+      return this.release(Number(repositoryId), Number(issue))
     }))
   }
 }

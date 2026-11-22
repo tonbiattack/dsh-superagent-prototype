@@ -77,12 +77,12 @@ export class AutopilotPoller {
         if (signal?.aborted) throw new Error('Issue polling was interrupted before reconciliation')
         const issue = eligibleIssue(listed, repository, facts.id)
         if (!issue) continue
-        const existing = this.host.queue.get(repository, issue.issue)
+        const existing = this.host.queue.get(facts.id, issue.issue)
         // A job that already ran, or is running, is not reconsidered: its outcome is the record.
         if (existing && existing.state !== 'queued') continue
         if (!eligible(issue, settings, allowed)) {
           // A queued job whose issue lost its label or its author's authorization is skipped rather than started.
-          if (existing) { this.host.queue.update(repository, issue.issue, { state: 'skipped', error: ineligibleReason(issue, settings, allowed) }); result.skipped += 1 }
+          if (existing) { this.host.queue.update(facts.id, issue.issue, { state: 'skipped', error: ineligibleReason(issue, settings, allowed) }); result.skipped += 1 }
           continue
         }
         const { created } = this.host.queue.enqueue({ repository, issue: issue.issue, repositoryId: facts.id, state: 'queued' })
@@ -91,10 +91,10 @@ export class AutopilotPoller {
       // A queued job whose issue closed before it started is skipped, so the queue holds only live work.
       if (signal?.aborted) throw new Error('Issue polling was interrupted before reconciliation')
       for (const job of this.host.queue.all()) {
-        if (job.state !== 'queued' || !sameRepo(job.repository, repository)) continue
+        if (job.state !== 'queued' || job.repositoryId !== facts.id) continue
         const listed = issues.find(item => item.number === job.issue)
         if (listed) continue
-        this.host.queue.update(job.repository, job.issue, { state: 'skipped', error: 'the issue closed before its work started' })
+        this.host.queue.update(job.repositoryId, job.issue, { state: 'skipped', error: 'the issue closed before its work started' })
         result.closed += 1
       }
       this.host.store.set(KV.autopilot.since(repository), new Date().toISOString())
@@ -102,7 +102,7 @@ export class AutopilotPoller {
     })
   }
   /** Rechecks the repository's immutable ID and default branch before reconciling queued jobs. */
-  private async facts(commands: Commands, repository: string): Promise<{ id?: number; defaultBranch?: string }> {
+  private async facts(commands: Commands, repository: string): Promise<{ id: number; defaultBranch: string }> {
     const stored = this.host.store.get(KV.autopilot.repository(repository))
     const read = await commands.api(RepositorySchema, '')
     if (!sameRepo(read.full_name, repository)) throw new Error(`Repository identity mismatch: expected ${repository}, got ${read.full_name}`)
