@@ -12,7 +12,7 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
+The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, **Execution**, **Autopilot**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
 
 | Tab | Shows |
 | --- | --- |
@@ -21,7 +21,8 @@ The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, *
 | Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
 | Eval | Decisions with their reason and matched rules |
 | Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
-| Settings | Sources, Eval, Execution, Prompts and Deployment. Each group includes its save history |
+| Autopilot | The repositories it watches, each job with its state and result, and the commands a person may run on one. It says plainly that dispatch and delivery are disabled while the feature is unfinished |
+| Settings | Sources, Eval, Execution, Autopilot, Prompts and Deployment. Each group includes its save history |
 
 ### Reading individual records
 
@@ -39,6 +40,7 @@ Ticket details show the originating Trigger, Decision and reason, scope and Poli
 - **Prompts:** **Edit** changes team sections, built-in parts and skills. **Full prompt** shows the assembled text and compares it with saved text or defaults. **History** lists versions. Edited built-in parts are marked changed and can be reset; templates list their required placeholders.
 
   An upgrade that changes an overridden default marks it **Default updated** (默认内容已更新). The panel compares the old and new defaults above the team's text. If the old default was not recorded, it compares the team's text with the new default instead. Choose **Keep my text** or **Use the new default**. Overrides for removed parts are listed below the tab bar and dropped on the next save.
+- **Autopilot:** the repositories to watch, the eligibility label, the allowed-author requirement, scheduling limits, the validation command the host runs itself, and the delivery switches. The group states plainly that the feature cannot be enabled until its safety work is complete, so every field is read-only.
 - **Deployment:** startup problems with **Check again**, the state directory and machine limits. Saved limits apply without restart. The DeepSeek Harness Plugin Manager exposes the same page.
 
 ## Search
