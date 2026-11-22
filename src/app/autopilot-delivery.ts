@@ -16,10 +16,16 @@ import type { ValidationResult } from './autopilot-validation.ts'
 /** A pull request as delivery reads it: its state, whether it merged, and what GitHub says about merging it. */
 const PullSchema = z.looseObject({
   number: z.number().int().positive(), html_url: z.string(), state: z.string(), title: z.string().nullish(),
-  merged: z.boolean().nullish(), mergeable: z.boolean().nullish(), mergeable_state: z.string().nullish(),
+  merged: z.boolean().nullish(), merged_at: z.string().nullish(), merge_commit_sha: z.string().nullish(),
+  mergeable: z.boolean().nullish(), mergeable_state: z.string().nullish(),
   head: z.looseObject({ ref: z.string(), sha: z.string() }), base: z.looseObject({ ref: z.string() }),
 })
 export type DeliveryPull = z.infer<typeof PullSchema>
+/**
+ * Whether a pull request merged. The list endpoint omits `merged` and reports `merged_at` instead, so both are read: a
+ * merged pull request that looked unmerged would be opened again, and merged twice.
+ */
+export const pullMergedState = (pull: Pick<DeliveryPull, 'merged' | 'merged_at'>): boolean => pull.merged === true || !!pull.merged_at
 /** One check run or commit status, reduced to what decides a merge. */
 export interface CheckState { name: string; failed: boolean; running: boolean }
 /** What GitHub reports about a pull request's mergeability, as delivery uses it. */
@@ -41,6 +47,12 @@ export interface MergeFacts {
 /** Why a pull request may not merge, or that it may. */
 export type MergeVerdict = { merge: true } | { merge: false; reason: string }
 /**
+ * GitHub's mergeability states that mean the pull request may merge. `unknown` is GitHub still computing the answer, which
+ * it reports for a moment after a push, so it is not a refusal: the merge call itself is the authority, and it refuses a
+ * pull request that is not mergeable.
+ */
+const MERGEABLE_STATES = new Set(['clean', 'has_hooks', 'unknown'])
+/**
  * Whether delivery may merge a pull request. Every refusal is a reason a person can act on, and none of them is a
  * bypass: a required check that has not passed, an unmet approval, a conflict, or a closed pull request all stop it.
  */
@@ -49,7 +61,7 @@ export function mergeVerdict(facts: MergeFacts, settings: AutopilotSettings): Me
   if (!facts.open) return { merge: false, reason: 'the pull request is not open' }
   if (facts.conflicting) return { merge: false, reason: 'the pull request conflicts with its base branch' }
   // GitHub's own verdict is never overridden: a blocked, behind or draft pull request is not mergeable whatever else holds.
-  if (facts.mergeableState && facts.mergeableState !== 'clean' && facts.mergeableState !== 'has_hooks') {
+  if (facts.mergeableState && !MERGEABLE_STATES.has(facts.mergeableState)) {
     return { merge: false, reason: `GitHub reports the pull request as ${facts.mergeableState}` }
   }
   const failed = facts.checks.filter(check => check.failed).map(check => check.name)
@@ -135,7 +147,7 @@ export class Delivery {
     const result: DeliveryResult = { pushed: false, commitSha }
     // What already exists decides the rest: a merged pull request for this very commit is the work already delivered.
     const existing = await this.pullFor(input.repository, input.branch, defaultBranch)
-    if (existing?.merged && sameName(existing.head.sha, commitSha)) {
+    if (existing && pullMergedState(existing) && sameName(existing.head.sha, commitSha)) {
       return { ...result, prNumber: existing.number, prUrl: existing.html_url, mergeSha: await this.mergeSha(existing.number) }
     }
     if (settings.autoPush) {
@@ -147,7 +159,7 @@ export class Delivery {
     const opened = existing ?? await this.open(input, defaultBranch)
     result.prNumber = opened.number
     result.prUrl = opened.html_url
-    if (opened.merged) {
+    if (pullMergedState(opened)) {
       result.mergeSha = await this.mergeSha(opened.number)
       return result
     }
@@ -165,7 +177,9 @@ export class Delivery {
     const owner = repository.split('/')[0] ?? ''
     const pulls = await this.host.commands.api(PullListSchema, `pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`)
     const matching = pulls.filter(pull => sameName(pull.head.ref, branch) && sameName(pull.base.ref, defaultBranch))
-    return matching.find(pull => pull.state === 'open' && !pull.merged) ?? matching.find(pull => pull.merged)
+    // The newest first, so a retry after a merge finds the pull request that merged rather than an older closed one.
+    const newest = matching.slice().sort((a, b) => b.number - a.number)
+    return newest.find(pull => pull.state === 'open' && !pullMergedState(pull)) ?? newest.find(pull => pullMergedState(pull))
   }
   /** Opens the pull request for the branch, targeting the repository's default branch. */
   private async open(input: { repository: string; issue: number; branch: string; summary: string }, defaultBranch: string): Promise<DeliveryPull> {
@@ -193,7 +207,7 @@ export class Delivery {
     // A required context that GitHub reports no run for has not passed, so it is named as missing rather than assumed.
     const reported = new Set(checks.map(check => check.name))
     const missing = (protection.requiredChecks ?? []).filter(name => !reported.has(name))
-    return { open: pull.state === 'open' && !pull.merged, conflicting: pull.mergeable === false || pull.mergeable_state === 'dirty',
+    return { open: pull.state === 'open' && !pullMergedState(pull), conflicting: pull.mergeable === false || pull.mergeable_state === 'dirty',
       checks, ...protection.requiredApprovals ? { requiredApprovals: protection.requiredApprovals } : {}, approvals,
       ...pull.mergeable_state ? { mergeableState: pull.mergeable_state } : {},
       ...missing.length ? { missingChecks: missing } : {} }
