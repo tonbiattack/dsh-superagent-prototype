@@ -75,10 +75,27 @@ export class Autopilot {
     }
     const { results, failures } = await this.host.poller.pollAll(signal)
     const dispatch = await this.host.scheduler.pass()
-    const reason = 'Autopilot dispatch is disabled until repository isolation and host-verified delivery are implemented'
-    this.host.health.set({ state: 'error', detail: failures.length ? `${reason}; polling failures: ${failures.map(item => `${item.repository}: ${item.error}`).join('; ')}` : reason,
-      at: new Date().toISOString() })
+    this.report(results, failures, dispatch)
     return { polls: results, failures, dispatch }
+  }
+  /** Writes the health entry: an error when a repository could not be read, otherwise what the queue holds. */
+  private report(polls: PollResult[], failures: { repository: string; error: string }[], dispatch: DispatchResult): void {
+    const at = new Date().toISOString()
+    const jobs = this.host.queue.all()
+    const counts = (state: AutopilotJob['state']) => jobs.filter(job => job.state === state).length
+    const detail = `${polls.length} repositories; ${counts('queued')} queued, ${counts('running')} running, `
+      + `${counts('done')} done, ${counts('failed')} failed; started ${dispatch.started.length}`
+    if (failures.length) {
+      this.host.health.set({ state: 'error', detail: `${failures.length} repositories could not be read: ${failures.map(item => `${item.repository}: ${item.error}`).join('; ')}`, at })
+      return
+    }
+    // A job that failed is a person's to look at, so it is reported rather than hidden behind a healthy count.
+    const failed = jobs.filter(job => job.state === 'failed')
+    if (failed.length) {
+      this.host.health.set({ state: 'error', detail: `${detail}; ${failed.length} job(s) failed, the newest: ${failed.at(-1)!.repository}#${failed.at(-1)!.issue}: ${failed.at(-1)!.error ?? 'no reason recorded'}`, at })
+      return
+    }
+    this.host.health.set({ state: 'ready', detail, at })
   }
   /** The loop: one tick per interval, waiting out the interval or the lifetime's abort. */
   private async loop(): Promise<void> {

@@ -37,6 +37,7 @@ export const USER_ERRORS = {
   panelOnlyEnvironment: ['refused', 'The execution environment (ticket directory, prepare command, blocked commands) can only be changed in the management panel'],
   panelOnlyAutopilot: ['refused', 'The autopilot\'s settings can only be changed in the management panel'],
   autopilotUnavailable: ['refused', 'Autopilot cannot be enabled until repository isolation and verified delivery are implemented'],
+  autopilotNoValidation: ['refused', 'The autopilot needs a validation command before it can be enabled, because delivery runs it itself'],
   panelOnlyAccounts: ['refused', 'Source fields that setup reads, such as account CLIs, can only be changed in the management panel'],
   setupComplete: ['refused', 'Setup is complete'],
   modelUnavailable: ['refused', 'The {block} model is not available: {error}'],

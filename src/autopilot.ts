@@ -66,9 +66,12 @@ export const sameRepo = (a: string, b: string): boolean => a.toLowerCase() === b
 /**
  * The next job to start: the oldest queued job whose repository still has a slot, so a busy repository does not
  * hold back another one. Returns undefined when nothing may start.
+ * @param jobs - every job, because the limits count the running ones, not only the queued candidates.
+ * @param candidates - the jobs this pass may still start, which excludes the ones it already considered.
  */
-export function nextJob(jobs: readonly AutopilotJob[], settings: AutopilotSettings): AutopilotJob | undefined {
-  const queued = jobs.filter(job => job.state === 'queued')
+export function nextJob(jobs: readonly AutopilotJob[], settings: AutopilotSettings,
+  candidates: readonly AutopilotJob[] = jobs): AutopilotJob | undefined {
+  const queued = candidates.filter(job => job.state === 'queued')
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.issue - b.issue)
   return queued.find(job => hasCapacity(jobs, job.repository, settings))
 }

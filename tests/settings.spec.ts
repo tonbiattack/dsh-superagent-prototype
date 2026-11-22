@@ -15,13 +15,16 @@ function deferred<T>() {
 }
 const model = { provider: 'worker-provider', model: 'worker-model' }
 
-it('refuses enabling the incomplete autopilot even from the panel', async () => {
+it('refuses enabling the autopilot without a validation command, and allows it with one', async () => {
   h = await startRuntime()
   const { settings, store } = h.runtime
   const before = store.settings().autopilot
+  // Delivery runs the validation command itself, so enabling without one would let it deliver on nothing.
   await expect(settings.save('autopilot', { ...before, enabled: true }, store.blockRevision('autopilot'), 'panel'))
-    .rejects.toThrow('Autopilot cannot be enabled')
+    .rejects.toThrow('needs a validation command')
   expect(store.settings().autopilot.enabled).toBe(false)
+  await settings.save('autopilot', { ...before, enabled: true, validationCommand: 'pnpm check' }, store.blockRevision('autopilot'), 'panel')
+  expect(store.settings().autopilot).toMatchObject({ enabled: true, validationCommand: 'pnpm check' })
 })
 
 it('refuses a save of a block that another save changed during its model or account check, and saves nothing of it', async () => {
