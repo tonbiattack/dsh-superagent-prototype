@@ -23,12 +23,16 @@ const settings = (patch: Record<string, unknown> = {}) => AutopilotConfigSchema.
   repositories: [{ fullName: 'owner/one', checkout: '/srv/one' }, { fullName: 'owner/two', checkout: '/srv/two' }], ...patch })
 /** A GitHub CLI that answers the repository read and the issue list from `issues`, and records what it was asked. */
 function cli(issues: Record<string, unknown[]>, repository = { id: 11, full_name: 'owner/one', default_branch: 'main' },
-  override: { pages?: (path: string) => unknown[] } = {}) {
+  override: { pages?: (path: string) => unknown[]; labelledBy?: string } = {}) {
   const asked: string[] = []
   const commands: Record<string, unknown> = {
     api: async (_schema: unknown, path: string) => { asked.push(path); return path === '' ? repository : {} },
     pages: async (_schema: unknown, path: string) => {
       asked.push(path)
+      // An Issue's events record who applied its label, which is not the same as who wrote it.
+      if (path.startsWith('issues/') && path.includes('/events')) {
+        return override.labelledBy === undefined ? [] : [{ event: 'labeled', actor: { login: override.labelledBy }, label: { name: 'autopilot' } }]
+      }
       return override.pages ? override.pages(path) : issues[repository.full_name] ?? []
     },
   }
@@ -100,9 +104,10 @@ describe('autopilot queue', () => {
 })
 
 describe('autopilot poller', () => {
-  const poller = (issues: Record<string, unknown[]>, patch: Record<string, unknown> = {}, allowed = ['alice']) => {
+  const poller = (issues: Record<string, unknown[]>, patch: Record<string, unknown> = {}, allowed = ['alice'], labelledBy: string | null = 'alice') => {
     const queue = new AutopilotQueue(store)
-    const { commands, asked } = cli(issues)
+    // `null` means GitHub records no label event at all, which is different from a named account applying it.
+    const { commands, asked } = cli(issues, undefined, { labelledBy: labelledBy ?? undefined })
     const poll = new AutopilotPoller({ store, queue, commands: () => commands, allowed: () => allowed, settings: () => settings(patch) })
     return { queue, poll, asked }
   }
@@ -111,6 +116,24 @@ describe('autopilot poller', () => {
     const result = await poll.poll('owner/one')
     expect(result).toMatchObject({ repository: 'owner/one', read: 1, queued: 1 })
     expect(queue.get(11, 7)).toMatchObject({ state: 'queued', repositoryId: 11 })
+  })
+  it('queues nothing when a listed account other than the author applied the label, so a third party cannot start work', async () => {
+    // The author is listed, but someone else labelled the Issue; that is not the author's request.
+    const { queue, poll } = poller({ 'owner/one': [listed(7)] }, {}, ['alice'], 'mallory')
+    expect((await poll.poll('owner/one')).queued).toBe(0)
+    expect(queue.all()).toEqual([])
+  })
+  it('queues nothing when GitHub records no author for the label, rather than assuming the author applied it', async () => {
+    const { queue, poll } = poller({ 'owner/one': [listed(7)] }, {}, ['alice'], null)
+    expect((await poll.poll('owner/one')).queued).toBe(0)
+    expect(queue.all()).toEqual([])
+  })
+  it('skips a queued job whose label was re-applied by an account that may not originate work', async () => {
+    const { queue, poll } = poller({ 'owner/one': [listed(7)] })
+    await poll.poll('owner/one')
+    const relabelled = poller({ 'owner/one': [listed(7)] }, {}, ['alice'], 'mallory')
+    await relabelled.poll.poll('owner/one')
+    expect(queue.get(11, 7)).toMatchObject({ state: 'skipped', error: 'mallory applied the autopilot label but may not originate work' })
   })
   it('queues nothing for an issue without the label, or from an account that may not originate work', async () => {
     const { queue, poll } = poller({ 'owner/one': [listed(7, { labels: [{ name: 'bug' }] }), listed(8, { user: { login: 'stranger' } })] })
@@ -196,7 +219,8 @@ describe('autopilot poller', () => {
     } })
     const poll = new AutopilotPoller({ store, queue, commands: repository => {
       current = repository
-      if (repository === 'owner/two') return cli({ 'owner/two': [listed(9)] }, { id: 12, full_name: 'owner/two', default_branch: 'main' }).commands
+      if (repository === 'owner/two') return cli({ 'owner/two': [listed(9)] }, { id: 12, full_name: 'owner/two', default_branch: 'main' },
+        { labelledBy: 'alice' }).commands
       return commands
     }, allowed: () => ['alice'], settings: () => settings() })
     const { results, failures } = await poll.pollAll()

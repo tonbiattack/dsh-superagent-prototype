@@ -18,11 +18,26 @@ const IssueListSchema = z.looseObject({
   pull_request: z.unknown().nullish(),
 })
 export type ListedIssue = z.infer<typeof IssueListSchema>
+/** One label event on an Issue: who applied or removed which label, and when. */
+const LabelEventSchema = z.looseObject({
+  event: z.string(), created_at: z.string().nullish(), actor: z.looseObject({ login: z.string() }).nullish(),
+  label: z.looseObject({ name: z.string() }).nullish(),
+})
 /** Repository facts revalidated on each poll: immutable ID, canonical name, and default branch. */
 const RepositorySchema = z.looseObject({ id: z.number().int().positive(), full_name: z.string(), default_branch: z.string() })
 /** GitHub's label names, whether the API returned strings or objects. */
 export const labelNames = (issue: Pick<ListedIssue, 'labels'>): string[] =>
   (issue.labels ?? []).flatMap(label => typeof label === 'string' ? [label] : label.name ? [label.name] : [])
+/**
+ * Who applied `label` to an Issue, from its label events, or undefined when no event names an application.
+ * GitHub records who labelled an Issue, which is not the same as who wrote it: a third party with write access can label
+ * someone else's Issue, and that must not be read as the author's request.
+ */
+export function labelledBy(events: readonly z.infer<typeof LabelEventSchema>[], label: string): string | undefined {
+  const applied = events.filter(event => event.event === 'labeled' && event.label?.name?.toLowerCase() === label.toLowerCase())
+  // The newest application is the one that stands: an earlier one may have been removed and re-applied by someone else.
+  return applied.at(-1)?.actor?.login
+}
 /** An issue as the queue records it, or undefined for a pull request, which the autopilot does not take up. */
 export function eligibleIssue(issue: ListedIssue, repository: string, repositoryId?: number): EligibleIssue | undefined {
   if (issue.pull_request != null || issue.state !== 'open' || !issue.user) return undefined
@@ -72,6 +87,15 @@ export class AutopilotPoller {
     if (signal?.aborted) throw new Error('Issue polling was interrupted before reconciliation')
     const allowed = this.host.allowed()
     const result: PollResult = { repository, read: issues.length, queued: 0, skipped: 0, closed: 0 }
+    // Who applied the label is read only for the issues that carry it, so a repository without one costs no extra reads.
+    const label = settings.eligibleLabel
+    const labelled = new Map<number, string | undefined>()
+    for (const listed of issues) {
+      if (signal?.aborted) throw new Error('Issue polling was interrupted before reconciliation')
+      if (!labelNames(listed).some(name => name.toLowerCase() === label.toLowerCase())) continue
+      labelled.set(listed.number, await this.labelledBy(commands, listed.number, label))
+    }
+    if (signal?.aborted) throw new Error('Issue polling was interrupted before reconciliation')
     return this.host.store.atomic(() => {
       for (const listed of issues) {
         if (signal?.aborted) throw new Error('Issue polling was interrupted before reconciliation')
@@ -80,9 +104,15 @@ export class AutopilotPoller {
         const existing = this.host.queue.get(facts.id, issue.issue)
         // A job that already ran, or is running, is not reconsidered: its outcome is the record.
         if (existing && existing.state !== 'queued') continue
-        if (!eligible(issue, settings, allowed)) {
-          // A queued job whose issue lost its label or its author's authorization is skipped rather than started.
-          if (existing) { this.host.queue.update(facts.id, issue.issue, { state: 'skipped', error: ineligibleReason(issue, settings, allowed) }); result.skipped += 1 }
+        // The label is the request only when a listed account applied it, which is not the same as who wrote the Issue.
+        const by = labelled.get(issue.issue)
+        const reason = !eligible(issue, settings, allowed) ? ineligibleReason(issue, settings, allowed)
+          : by === undefined ? `the ${label} label has no recorded author, so it cannot be shown to be a request`
+            : !allowed.some(id => id.toLowerCase() === by.toLowerCase()) ? `${by} applied the ${label} label but may not originate work`
+              : undefined
+        if (reason !== undefined) {
+          // A queued job whose issue lost its label or its authorization is skipped rather than started.
+          if (existing) { this.host.queue.update(facts.id, issue.issue, { state: 'skipped', error: reason }); result.skipped += 1 }
           continue
         }
         const { created } = this.host.queue.enqueue({ repository, issue: issue.issue, repositoryId: facts.id, state: 'queued' })
@@ -110,6 +140,11 @@ export class AutopilotPoller {
     const facts = { id: read.id, defaultBranch: read.default_branch }
     this.host.store.set(KV.autopilot.repository(repository), facts)
     return facts
+  }
+  /** Who applied `label` to an Issue, or undefined when GitHub records no application. */
+  private async labelledBy(commands: Commands, issue: number, label: string): Promise<string | undefined> {
+    const events = await commands.pages(LabelEventSchema, `issues/${issue}/events?per_page=100`)
+    return labelledBy(events, label)
   }
   /** Every open issue of the repository, oldest first; malformed entries fail the poll closed. */
   private async openIssues(commands: Commands): Promise<ListedIssue[]> {

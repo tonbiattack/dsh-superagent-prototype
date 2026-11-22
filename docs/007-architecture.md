@@ -319,7 +319,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/autopilot.ts` | The autopilot service: the polling loop, one tick that polls then schedules, and the `autopilot` health entry |
 | `src/app/autopilot-queue.ts` | `AutopilotQueue`: the durable job records, one per repository and issue, keyed by the repository's immutable ID so a rename keeps them, and the only writer of them |
-| `src/app/autopilot-poller.ts` | `AutopilotPoller`: reads each watched repository's open issues through the agent's `gh`, queues the eligible ones, and skips a queued job whose issue closed or lost its label |
+| `src/app/autopilot-poller.ts` | `AutopilotPoller`: reads each watched repository's open issues through the agent's `gh`, queues the ones whose label a listed account applied, and skips a queued job whose issue closed or lost its label |
 | `src/app/autopilot-scheduler.ts` | Unfinished scheduler prototype; dispatch and delivery remain disabled pending safety verification |
 | `src/app/autopilot-delivery.ts` | Unfinished `Delivery` prototype; external writes are disabled pending validation, identity, and branch-protection work |
 | `src/app/autopilot-recovery.ts` | `recover`: what a restart does with a job that was running, from its Ticket, its branch and its commit; a fact it could not establish changes nothing rather than being read as a negative one |
