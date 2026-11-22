@@ -71,8 +71,10 @@ export class JobLocks {
       this.held.set(key, held)
       this.directories.set(key, directory)
       return held
-    } catch {
-      // A lock another holder keeps is not an error: the job simply waits for the next pass.
+    } catch (error) {
+      // A lock another holder keeps is not an error: the job simply waits for the next pass. Anything else is a real
+      // failure to lock, which must not be mistaken for contention, so it is reported rather than swallowed.
+      if ((error as { code?: string }).code !== 'ELOCKED') throw error
       return undefined
     }
   }

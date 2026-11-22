@@ -3,7 +3,7 @@
 // The unit tests cover each part; this covers the wiring between them, which is where a feature like this actually breaks:
 // the poller queues a job, the scheduler proves the checkout, reads the Issue back, hands its Trigger to the Engine, the
 // main Session assesses it, and the accept creates the Ticket.
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -58,8 +58,10 @@ async function enabled(patch: Record<string, unknown> = {}, listed: ReturnType<t
     }
     // A single Issue, which a dispatch reads back before it starts.
     if (path.includes('/issues/')) return listed ?? { message: 'Not Found' }
-    // The immutable ID and default branch the poller and delivery read.
-    return { id: 11, full_name: 'acme/widgets', default_branch: 'master', permissions: { push: true } }
+    // The immutable ID and default branch the poller and delivery read; each repository has its own.
+    const id = path.includes('acme/gadgets') ? 12 : 11
+    return { id, full_name: path.includes('acme/gadgets') ? 'acme/gadgets' : 'acme/widgets', default_branch: 'master',
+      permissions: { push: true } }
   }
   // `Commands.gh` parses the CLI's JSON, so the fake answers with the object and `run` serialises it.
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(gh)
@@ -120,4 +122,50 @@ it('does not queue the same Issue twice when the poll runs again', async () => {
   // A second poll of the same Issue finds the job it already recorded, so no second Ticket can come of it.
   queue.enqueue({ repository: 'acme/widgets', repositoryId: 11, issue: 7, state: 'queued' })
   expect(queue.all()).toHaveLength(first)
+})
+
+it('runs two repositories independently, each in its own checkout', async () => {
+  // Two repositories with the same issue number: the jobs must not collide, and each must be proven against its own
+  // checkout, which is what keeps work from landing in the wrong repository.
+  const second = mkdtempSync(join(tmpdir(), 'autopilot-checkout-two-'))
+  mkdirSync(join(second, '.git'), { recursive: true })
+  // The first checkout is made here, not inside `enabled`, because the settings name it before `enabled` runs.
+  const first = mkdtempSync(join(tmpdir(), 'autopilot-checkout-one-'))
+  mkdirSync(join(first, '.git'), { recursive: true })
+  const { host, queue } = await enabled({ maxConcurrentGlobal: 2, maxConcurrentPerRepo: 1,
+    repositories: [{ fullName: 'acme/widgets', checkout: first }, { fullName: 'acme/gadgets', checkout: second }] })
+  // Each repository's own remote, so a checkout of one is refused for the other. `git` takes its directory as `cwd`.
+  vi.spyOn(Commands.prototype, 'git').mockImplementation(async (args: string[], cwd: string) => {
+    const gadgets = cwd === second
+    if (args[0] === 'rev-parse') return `${cwd}\n`
+    if (args[0] === 'remote') return `https://github.com/${gadgets ? 'acme/gadgets' : 'acme/widgets'}.git\n`
+    return ''
+  })
+  // `Commands.git` runs `git` through `run`, so the same answers are installed there, after `enabled` fixed `run`.
+  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (program: string, args: string[], cwd?: string) => {
+    if (program !== 'git') return '{"ok":true,"data":{}}'
+    const gadgets = cwd === second
+    if (args[0] === 'rev-parse') return `${cwd}\n`
+    if (args[0] === 'remote') return `https://github.com/${gadgets ? 'acme/gadgets' : 'acme/widgets'}.git\n`
+    return ''
+  })
+  queue.enqueue({ repository: 'acme/widgets', repositoryId: 11, issue: 7, state: 'queued' })
+  queue.enqueue({ repository: 'acme/gadgets', repositoryId: 12, issue: 7, state: 'queued' })
+  // The scheduling pass alone, because the poller would reconcile the queue against the fake's issue list, which names
+  // only one repository; what this covers is that two repositories dispatch independently.
+  const result = await (host.runtime.autopilot as unknown as { host: { scheduler: { pass: () => Promise<{ started: { repositoryId: number }[];
+    errors: { error: string }[] }> } } }).host.scheduler.pass()
+  // The lock lives in each checkout, so both must be able to take theirs.
+  const locks = (host.runtime as unknown as { autopilotLocks: { holds: (id: number, issue: number) => boolean } }).autopilotLocks
+  const files = [first, second].map(dir => {
+    try { return readdirSync(join(dir, '.git', 'dsh-superagent-autopilot')).join(',') } catch { return 'missing' }
+  })
+  expect({ errors: result.errors.map(item => item.error), started: result.started.map(job => job.repositoryId),
+    held: [locks.holds(11, 7), locks.holds(12, 7)], files }).toEqual({ errors: [], started: [11, 12], held: [true, true],
+    files: ['11-issue-7.lock.lock', '12-issue-7.lock.lock'] })
+  // Both started, and each job kept its own repository: the same issue number is two jobs, not one.
+  expect(result.started.map(job => job.repositoryId).sort()).toEqual([11, 12])
+  expect(queue.get(11, 7)).toMatchObject({ repository: 'acme/widgets', state: 'running' })
+  expect(queue.get(12, 7)).toMatchObject({ repository: 'acme/gadgets', state: 'running' })
+  rmSync(second, { recursive: true, force: true }); rmSync(first, { recursive: true, force: true })
 })
