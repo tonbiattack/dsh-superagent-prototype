@@ -50,7 +50,7 @@ import { AutopilotQueue } from './autopilot-queue.ts'
 import { AutopilotPoller } from './autopilot-poller.ts'
 import { AutopilotScheduler, branchOf } from './autopilot-scheduler.ts'
 import { Autopilot } from './autopilot.ts'
-import { Delivery, branchHead, pullMerged, type DeliveryResult } from './autopilot-delivery.ts'
+import { Delivery, branchHeadOrUnknown, pullMerged, type DeliveryResult } from './autopilot-delivery.ts'
 import { JobLocks } from './autopilot-locks.ts'
 import type { RecoveryFacts } from './autopilot-recovery.ts'
 import { defaultBranchOf } from './autopilot-poller.ts'
@@ -280,10 +280,14 @@ export class Runtime extends Service implements SourceHost {
   private async autopilotFacts(job: AutopilotJob, ticket: Ticket | undefined): Promise<RecoveryFacts> {
     const commands = this.commands.forRepository(job.repository)
     const branch = job.branch ?? `agent/${ticket?.execution?.name ?? branchOf(job)}`
-    const head = await branchHead(commands, ticket?.execution?.directory ?? '', branch)
+    const directory = ticket?.execution?.directory ?? ''
+    // A read that failed is reported as unknown, never as "the branch is gone": the two lead to opposite decisions.
+    const head = await branchHeadOrUnknown(commands, directory, branch)
     const pull = job.prNumber === undefined ? undefined : await pullMerged(commands, job.prNumber)
-    return { ticket: !!ticket, open: !!ticket && liveTicket(ticket), branch: !!head, commitLanded: !!job.commitSha && job.commitSha === head,
-      ...pull === undefined ? {} : { pull: { merged: pull } } }
+    return { ticket: !!ticket, open: !!ticket && liveTicket(ticket),
+      branch: head === 'unknown' ? 'unknown' : !!head,
+      commitLanded: head === 'unknown' || !job.commitSha ? 'unknown' : job.commitSha === head,
+      ...pull === undefined ? {} : { pull: { merged: pull ?? 'unknown' as const } } }
   }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
@@ -305,9 +309,10 @@ export class Runtime extends Service implements SourceHost {
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
-    this.executor.resume()
-    // Existing autopilot jobs are not reconciled automatically while recovery is incomplete.
+    // The autopilot reconciles the jobs a restart found running before anything new starts, and before the Executor
+    // resumes their Tickets, so a job whose work already landed is never repeated.
     await this.autopilot.recover()
+    this.executor.resume()
     this.passes.start()
     this.effects.start()
     this.autopilot.start()

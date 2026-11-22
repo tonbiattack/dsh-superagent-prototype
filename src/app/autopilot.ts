@@ -51,13 +51,14 @@ export class Autopilot {
   /** Waits for the loop to stop, which the lifetime's abort causes. */
   async stop(): Promise<void> { await this.running }
   /**
-   * Reconciles previously recorded jobs. Recovery is incomplete and must not be used to authorize new dispatch.
+   * Reconciles the jobs a restart found running, before anything new starts. Each is checked against its Ticket, its
+   * branch and its commit, so work that landed is not repeated and work that cannot be found fails with the reason.
+   * A fact the restart could not establish changes nothing and is looked at again on a later pass.
    */
   async recover(): Promise<void> {
-    // Existing execution records remain untouched until restart reconciliation can distinguish
-    // missing state from failed reads and coordinate with the executor's own recovery.
-    if (this.host.queue.inStates('running').length) this.host.health.set({ state: 'error',
-      detail: 'Automatic recovery is disabled: running jobs need manual reconciliation', at: new Date().toISOString() })
+    if (!this.host.configured()) return
+    try { await this.host.scheduler.recover() }
+    catch (error) { this.host.health.set({ state: 'error', detail: `Recovery failed: ${String(error)}`, at: new Date().toISOString() }) }
   }
   /**
    * One iteration: poll every watched repository, then schedule. Returns what happened so a test or a person's command

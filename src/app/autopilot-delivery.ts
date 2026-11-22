@@ -228,3 +228,16 @@ export async function branchHead(commands: Commands, directory: string, branch: 
   if (!directory) return undefined
   return commands.git(['rev-parse', '--verify', `refs/heads/${branch}`], directory).then(text => text.trim() || undefined, () => undefined)
 }
+/**
+ * The commit a branch is at, distinguishing a branch that is absent from a read that failed.
+ * @returns the commit, `undefined` when the branch is genuinely absent, or `'unknown'` when Git could not be read.
+ */
+export async function branchHeadOrUnknown(commands: Commands, directory: string, branch: string): Promise<string | undefined | 'unknown'> {
+  if (!directory) return 'unknown'
+  try { return (await commands.git(['rev-parse', '--verify', `refs/heads/${branch}`], directory)).trim() || undefined }
+  catch (error) {
+    // `rev-parse --verify` exits non-zero for a missing ref, which is a fact; anything else is a failed read.
+    const code = (error as { exitCode?: number }).exitCode
+    return code === 1 || code === 128 ? undefined : 'unknown'
+  }
+}

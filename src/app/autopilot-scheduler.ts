@@ -126,6 +126,7 @@ export class AutopilotScheduler {
       if (decision.action === 'settle') this.host.queue.update(job.repository, job.issue, { state: decision.state, error: undefined })
       else if (decision.action === 'fail') this.host.queue.update(job.repository, job.issue, { state: 'failed', error: decision.reason })
       else if (decision.action === 'requeue') this.host.queue.update(job.repository, job.issue, { state: 'queued' })
+      else if (decision.action === 'wait') this.host.queue.update(job.repository, job.issue, { error: decision.reason })
       // A resume leaves the job running: the Executor's own recovery continues its Ticket.
     }
     return decisions
