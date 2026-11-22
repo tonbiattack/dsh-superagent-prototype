@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { AutopilotConfigSchema } from '../src/policy.ts'
 import { active, branchAllowed, eligible, hasCapacity, ineligibleReason, jobBranch, jobKey, mayRetry, nextJob, repositoryOf, sameRepo,
   terminal, type AutopilotJob } from '../src/autopilot.ts'
+import { AUTOPILOT_ID_PREFIX, autopilotTrigger, fromAutopilot, issueTrigger } from '../src/sources/github-trigger.ts'
 
 const settings = (patch: Record<string, unknown> = {}) => AutopilotConfigSchema.parse({ enabled: true, repositories: [{ fullName: 'owner/one', checkout: '/srv/one' }], ...patch })
 const job = (issue: number, patch: Partial<AutopilotJob> = {}): AutopilotJob => ({ repository: 'owner/one', repositoryId: 11, issue, state: 'queued',
@@ -32,6 +33,22 @@ describe('autopilot eligibility', () => {
   it('honours a configured label rather than the default', () => {
     expect(eligible(issue({ labels: ['ai'] }), settings({ eligibleLabel: 'ai' }), ['alice'])).toBe(true)
     expect(eligible(issue(), settings({ eligibleLabel: 'ai' }), ['alice'])).toBe(false)
+  })
+})
+
+describe('autopilot trigger identity', () => {
+  it('marks a Trigger the autopilot built, so the gate can tell it from one that merely claims the label', () => {
+    const issue = { number: 7, title: 'Fix it', body: 'Please fix', user: { login: 'alice' }, created_at: '2026-01-01T00:00:00Z',
+      html_url: 'https://github.com/owner/one/issues/7', updated_at: '2026-01-02T00:00:00Z' }
+    const trigger = autopilotTrigger(issue, 'autopilot', 'agent-bot')
+    expect(fromAutopilot(trigger)).toBe(true)
+    expect(trigger.id.startsWith(AUTOPILOT_ID_PREFIX)).toBe(true)
+    // The same revision is the same Trigger, so a repeated poll is a duplicate rather than new work.
+    expect(autopilotTrigger(issue, 'autopilot', 'agent-bot').id).toBe(trigger.id)
+    // An edit is a new Trigger, so a re-labelled or changed issue is taken up again.
+    expect(autopilotTrigger({ ...issue, updated_at: '2026-01-03T00:00:00Z' }, 'autopilot', 'agent-bot').id).not.toBe(trigger.id)
+    // An ordinary Issue Trigger is not one the autopilot built.
+    expect(fromAutopilot(issueTrigger(issue, 'agent-bot'))).toBe(false)
   })
 })
 
