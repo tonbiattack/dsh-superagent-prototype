@@ -1,7 +1,7 @@
 // The autopilot's delivery: the merge rules, and the calls that push, open, reuse and merge a pull request.
 import { describe, expect, it, vi } from 'vitest'
 import { AutopilotConfigSchema } from '../src/policy.ts'
-import { Delivery, mergeVerdict, pullBody, pullTitle, type DeliveryHost, type MergeFacts } from '../src/app/autopilot-delivery.ts'
+import { Delivery, mergeVerdict, pullBody, pullMergedState, pullTitle, type DeliveryHost, type MergeFacts } from '../src/app/autopilot-delivery.ts'
 import type { ValidationResult } from '../src/app/autopilot-validation.ts'
 import { CliError } from '../src/infra/commands.ts'
 import type { Commands } from '../src/infra/commands.ts'
@@ -35,6 +35,16 @@ describe('merge verdict', () => {
     expect(mergeVerdict(facts({ checks: [check('lint')], missingChecks: ['build'] }), settings()))
       .toEqual({ merge: false, reason: 'required checks have not run: build' })
   })
+  it('refuses a pull request GitHub reports as blocked, behind or draft', () => {
+    for (const state of ['blocked', 'behind', 'dirty', 'draft']) {
+      expect(mergeVerdict(facts({ mergeableState: state }), settings()))
+        .toEqual({ merge: false, reason: `GitHub reports the pull request as ${state}` })
+    }
+  })
+  it('does not refuse while GitHub is still computing mergeability, which it reports as unknown', () => {
+    // GitHub reports `unknown` for a moment after a push; the merge call itself refuses a pull request that cannot merge.
+    expect(mergeVerdict(facts({ mergeableState: 'unknown' }), settings())).toEqual({ merge: true })
+  })
   it('refuses while the repository requires more approvals than it has', () => {
     expect(mergeVerdict(facts({ requiredApprovals: 2, approvals: 1 }), settings()))
       .toEqual({ merge: false, reason: 'the repository requires 2 approving review(s); it has 1' })
@@ -49,8 +59,18 @@ describe('merge verdict', () => {
   })
 })
 
-describe('pull request text', () => {
-  it('names the issue in the title, so the two read as one piece of work', () => {
+describe('merged pull requests', () => {
+  it('reads a merged pull request from the list endpoint, which reports merged_at and omits merged', () => {
+    // GitHub's list endpoint returns `merged: null` for a merged pull request and names the time in `merged_at`; reading
+    // only `merged` made a merged pull request look unmerged, so it was opened again and merged twice.
+    expect(pullMergedState({ merged: null, merged_at: '2026-01-01T00:00:00Z' })).toBe(true)
+    expect(pullMergedState({ merged: true, merged_at: null })).toBe(true)
+    expect(pullMergedState({ merged: false, merged_at: null })).toBe(false)
+    expect(pullMergedState({ merged: null, merged_at: null })).toBe(false)
+  })
+})
+
+describe('pull request text', () => {  it('names the issue in the title, so the two read as one piece of work', () => {
     expect(pullTitle(12, 'Fix the parser')).toBe('Fix the parser (#12)')
   })
   it('closes the issue from the body only when the operator asked for it, and says who opened it', () => {
