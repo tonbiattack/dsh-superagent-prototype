@@ -5,6 +5,7 @@ import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
+import { AUTOPILOT_ID_PREFIX } from '../src/sources/github-trigger.ts'
 import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
 
 const MEMBER = 'ou_alice'
@@ -88,10 +89,17 @@ describe('gate', () => {
   })
 })
 describe('autopilot gate', () => {
-  const opted = (login = 'Alice', patch: Record<string, unknown> = {}): Trigger => ({ ...github(login), meta: { number: 7, isPr: false, autopilot: 'autopilot' }, ...patch })
+  // Only the autopilot's own poller builds a Trigger with this id prefix, which is what makes the label evidence.
+  const opted = (login = 'Alice', patch: Record<string, unknown> = {}): Trigger => ({ ...github(login),
+    id: `${AUTOPILOT_ID_PREFIX}abc`, meta: { number: 7, isPr: false, autopilot: 'autopilot' }, ...patch })
   const on = (patch: Record<string, unknown> = {}) => setup(SettingsSchema.parse({ ...base, autopilot: { enabled: true, ...patch } }))
-  it('does not trust a source metadata flag as proof an operator applied a label', () => {
-    expect(on().policy.gate(opted(), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
+  it('admits an issue an operator opted in by label as an explicit request from a listed author, without the agent being addressed', () => {
+    expect(on().policy.gate(opted(), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { via: 'autopilot', label: 'autopilot', issue: 7, source: 'github', sender: 'Alice' } })
+  })
+  it('does not trust a metadata flag on a Trigger the autopilot did not build', () => {
+    const forged: Trigger = { ...opted(), id: 'github-issue:abc' }
+    expect(on().policy.gate(forged, thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
   })
   it('admits nothing while the autopilot is off, so the label alone starts no work', () => {
     expect(policy.gate(opted(), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
@@ -106,12 +114,11 @@ describe('autopilot gate', () => {
     const plain: Trigger = { ...github('Alice'), meta: { number: 7, isPr: false } }
     expect(on().policy.gate(plain, thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
   })
-  it('does not revalidate an autopilot mandate without trusted label evidence', () => {
+  it('keeps an autopilot Mandate while the autopilot is on and its author may still originate work', () => {
     const mandate = { strength: 'explicit' as const, policyVersion: 'v', actor: { source: 'github', id: 'Alice' }, scope: 'fix',
       basis: { via: 'autopilot' as const, label: 'autopilot', issue: 7, source: 'github' } }
-    expect(on().policy.revalidate(mandate)).toBe(false)
+    expect(on().policy.revalidate(mandate)).toBe(true)
     expect(policy.revalidate(mandate)).toBe(false)
-    expect(on({ requireAllowedActor: false }).policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(false)
     expect(on().policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(false)
   })
 })

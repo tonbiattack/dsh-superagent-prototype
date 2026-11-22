@@ -88,6 +88,13 @@ export function issueTrigger(issue: Opened, agent: string): Trigger {
     channel: githubChannel(issue.number, issue.html_url), url: issue.html_url, meta: { number: issue.number, isPr: false, kind: 'issue' } }
 }
 /**
+ * The prefix of every Trigger the autopilot's own poller builds. The gate accepts an autopilot basis only for a Trigger
+ * carrying it, so a Trigger from any other path cannot claim the label's authority by setting a metadata field.
+ */
+export const AUTOPILOT_ID_PREFIX = 'github-autopilot:'
+/** Whether a Trigger was built by the autopilot's poller, which is what verified the label against GitHub. */
+export const fromAutopilot = (trigger: Pick<Trigger, 'id'>): boolean => trigger.id.startsWith(AUTOPILOT_ID_PREFIX)
+/**
  * Builds the trigger for an Issue the autopilot took up because it carries the eligibility label.
  * Its ID names the label and the issue's update time, so a re-labelled or edited issue is a new Trigger while a repeated
  * poll of the same revision is a duplicate; `meta.autopilot` is what the gate reads as the addressing.
@@ -95,7 +102,7 @@ export function issueTrigger(issue: Opened, agent: string): Trigger {
 export function autopilotTrigger(issue: Opened & { updated_at?: string | null }, label: string, agent: string): Trigger {
   const base = issueTrigger(issue, agent)
   const revision = issue.updated_at ?? issue.created_at
-  return { ...base, id: key('github-autopilot', String(issue.number), label, revision),
+  return { ...base, id: `${AUTOPILOT_ID_PREFIX}${key('github-autopilot', String(issue.number), label, revision)}`,
     meta: { ...base.meta, autopilot: label, revision } }
 }
 /**
