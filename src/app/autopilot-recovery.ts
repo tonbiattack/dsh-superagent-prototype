@@ -1,21 +1,26 @@
 /**
- * Prototype recovery classification. These rules are not yet sufficient to safely restart execution:
- * unknown GitHub/Git state, cross-process locks, and durable side effects need reconciliation.
+ * The autopilot's recovery: what a restart finds, and what it may safely resume.
+ *
+ * A restart cannot tell "the branch is gone" from "Git could not be read", so every fact is three-valued: known true,
+ * known false, or unknown. An unknown fact never authorizes a decision that would repeat or discard work; the job waits
+ * for a later pass instead. The rules are pure so they can be tested without a host.
  */
 import type { AutopilotJob, AutopilotState } from '../autopilot.ts'
 
+/** A fact a restart could not establish, such as a Git read that failed. */
+export type Unknown = 'unknown'
 /** What a restart found for one job, which decides whether it resumes. */
 export interface RecoveryFacts {
   /** The job's Ticket still exists. */
-  ticket: boolean
+  ticket: boolean | Unknown
   /** The Ticket is still open. */
-  open: boolean
+  open: boolean | Unknown
   /** The branch exists in the checkout. */
-  branch: boolean
+  branch: boolean | Unknown
   /** The commit the job recorded is still the branch's head. */
-  commitLanded: boolean
+  commitLanded: boolean | Unknown
   /** A pull request for the branch exists, and whether it merged. */
-  pull?: { merged: boolean }
+  pull?: { merged: boolean | Unknown }
 }
 /** What recovery decided for a job. */
 export type Recovery =
@@ -27,6 +32,8 @@ export type Recovery =
   | { action: 'fail'; reason: string }
   /** The job never started its work: queue it again. */
   | { action: 'requeue'; reason: string }
+  /** A fact could not be established: change nothing and look again on a later pass. */
+  | { action: 'wait'; reason: string }
 /**
  * Decides what a restart does with a job that was running.
  *
@@ -34,15 +41,26 @@ export type Recovery =
  * still open is live work, which the Executor's own recovery resumes. A recorded commit that is still the branch's head
  * means the work landed, so only delivery is left. Anything else is a job whose work cannot be found, which fails with
  * the reason rather than starting over and risking a duplicate commit.
+ *
+ * An unknown fact is never read as a negative one: a failed Git read must not fail a job whose work is fine, and must
+ * not resume one whose work may already have landed.
  */
 export function recover(job: Pick<AutopilotJob, 'state' | 'commitSha' | 'prNumber'>, facts: RecoveryFacts): Recovery {
-  if (facts.pull?.merged) return { action: 'settle', state: 'done', reason: 'the pull request merged before the restart' }
+  if (facts.pull?.merged === true) return { action: 'settle', state: 'done', reason: 'the pull request merged before the restart' }
   if (job.state === 'queued') return { action: 'requeue', reason: 'the job had not started' }
-  if (facts.open) return { action: 'resume', reason: 'the ticket is still open' }
-  if (!facts.ticket) return { action: 'fail', reason: 'the ticket for this issue is gone' }
-  if (job.commitSha && facts.commitLanded) return { action: 'resume', reason: 'the commit landed; only delivery is left' }
-  if (job.prNumber && facts.pull && !facts.pull.merged) return { action: 'resume', reason: 'the pull request is still open' }
-  if (!facts.branch) return { action: 'fail', reason: 'the branch is gone, so the work cannot be delivered' }
+  if (facts.open === true) return { action: 'resume', reason: 'the ticket is still open' }
+  // A pull request that is known to be open is live work, whatever the Ticket says.
+  if (job.prNumber && facts.pull?.merged === false) return { action: 'resume', reason: 'the pull request is still open' }
+  if (job.commitSha && facts.commitLanded === true) return { action: 'resume', reason: 'the commit landed; only delivery is left' }
+  // Nothing below may be decided from a fact the restart could not establish.
+  const unknown = [
+    ...facts.ticket === 'unknown' ? ['its ticket'] : [], ...facts.open === 'unknown' ? ['whether its ticket is open'] : [],
+    ...facts.branch === 'unknown' ? ['its branch'] : [], ...facts.commitLanded === 'unknown' ? ['its commit'] : [],
+    ...facts.pull?.merged === 'unknown' ? ['its pull request'] : [],
+  ]
+  if (unknown.length) return { action: 'wait', reason: `could not establish ${unknown.join(', ')}; nothing was changed` }
+  if (facts.ticket === false) return { action: 'fail', reason: 'the ticket for this issue is gone' }
+  if (facts.branch === false) return { action: 'fail', reason: 'the branch is gone, so the work cannot be delivered' }
   return { action: 'fail', reason: 'the ticket ended without a result and its commit is not on the branch' }
 }
 /** Whether a job may be started again after a failure, given how many attempts it has made. */

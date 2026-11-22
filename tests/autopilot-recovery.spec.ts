@@ -37,6 +37,20 @@ describe('recovery', () => {
     expect(recover(job({ commitSha: 'abc' }), facts({ commitLanded: false }))).toEqual({ action: 'fail',
       reason: 'the ticket ended without a result and its commit is not on the branch' })
   })
+  it('waits rather than failing a job whose branch could not be read', () => {
+    expect(recover(job(), facts({ branch: 'unknown' }))).toEqual({ action: 'wait',
+      reason: 'could not establish its branch; nothing was changed' })
+  })
+  it('waits rather than resuming a job whose commit could not be read', () => {
+    expect(recover(job({ commitSha: 'abc' }), facts({ commitLanded: 'unknown' }))).toMatchObject({ action: 'wait' })
+  })
+  it('waits rather than settling a job whose pull request could not be read', () => {
+    expect(recover(job({ prNumber: 5 }), facts({ pull: { merged: 'unknown' } }))).toMatchObject({ action: 'wait' })
+  })
+  it('still settles a job whose pull request is known to have merged, whatever else is unknown', () => {
+    expect(recover(job(), facts({ pull: { merged: true }, branch: 'unknown', commitLanded: 'unknown' })))
+      .toEqual({ action: 'settle', state: 'done', reason: 'the pull request merged before the restart' })
+  })
   it('bounds automatic retries by the configured fix attempts', () => {
     expect(retryable({ attempts: 0 }, 3)).toBe(true)
     expect(retryable({ attempts: 3 }, 3)).toBe(false)

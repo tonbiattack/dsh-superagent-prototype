@@ -322,7 +322,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/autopilot-poller.ts` | `AutopilotPoller`: reads each watched repository's open issues through the agent's `gh`, queues the eligible ones, and skips a queued job whose issue closed or lost its label |
 | `src/app/autopilot-scheduler.ts` | Unfinished scheduler prototype; dispatch and delivery remain disabled pending safety verification |
 | `src/app/autopilot-delivery.ts` | Unfinished `Delivery` prototype; external writes are disabled pending validation, identity, and branch-protection work |
-| `src/app/autopilot-recovery.ts` | `recover`: what a restart does with a job that was running, from its Ticket, its branch and its commit; and which states a person may pause, resume or skip |
+| `src/app/autopilot-recovery.ts` | `recover`: what a restart does with a job that was running, from its Ticket, its branch and its commit; a fact it could not establish changes nothing rather than being read as a negative one |
 | `src/app/autopilot-locks.ts` | Prototype per-issue file locks scoped to one state directory; cross-directory exclusion is not established |
 | `src/app/autopilot-workspace.ts` | Where a job's work runs: its own repository's checkout, and the proof that the checkout's `origin` is that repository |
 | `src/app/autopilot-validation.ts` | `validate`: the host runs the operator's validation command itself and reads its exit status, so a worker's report is never evidence |
@@ -432,7 +432,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/autopilot.spec.ts` | The autopilot's rules: eligibility by label and allowed author, the queue's capacity and order, the branch a job commits to, and the refusal to commit to the default branch |
 | `tests/autopilot-queue.spec.ts` | Queue and polling tests, plus a dispatch guard; unfinished scheduler scenarios are skipped |
 | `tests/autopilot-delivery.spec.ts` | Merge-rule unit tests and delivery safety guard; unfinished delivery scenarios are skipped |
-| `tests/autopilot-recovery.spec.ts` | Recovery: what a restart does with a running job, the per-issue lock across processes, and the pause, resume, skip and retry a person asks for |
+| `tests/autopilot-recovery.spec.ts` | Recovery: what a restart does with a running job, including a fact it could not establish, the per-issue lock across processes, and the pause, resume, skip and retry a person asks for |
 | `tests/autopilot-workspace.spec.ts` | Each repository's own checkout, the remote URLs that name it, and the refusal of a checkout of another repository |
 | `tests/autopilot-validation.spec.ts` | The host's own validation: a passing exit status, a failing one, a missing command, a missing checkout, and a command that cannot run |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
