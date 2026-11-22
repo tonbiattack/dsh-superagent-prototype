@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { CliError, type Commands } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import { branchAllowed, type AutopilotSettings } from '../autopilot.ts'
+import type { ValidationResult } from './autopilot-validation.ts'
 
 /** A pull request as delivery reads it: its state, whether it merged, and what GitHub says about merging it. */
 const PullSchema = z.looseObject({
@@ -81,6 +82,11 @@ export interface DeliveryHost {
   defaultBranch(): Promise<string>
   /** The commit the work left on its branch, read from the checkout. */
   headSha(directory: string, branch: string): Promise<string | undefined>
+  /**
+   * Runs the operator's validation command in the job's checkout and reports what the host observed.
+   * Delivery never pushes or merges on a worker's report alone.
+   */
+  validate(directory: string): Promise<ValidationResult>
 }
 /** A pull request delivery found for the branch, if any. */
 const PullListSchema = z.array(PullSchema)
@@ -105,6 +111,9 @@ export class Delivery {
     // those checks and branch-protection reconciliation are implemented and verified.
     if (this.unsafeToDeliver()) throw new Error('Automatic delivery is disabled: host-verified tests and repository isolation are not implemented')
     const settings = this.host.settings()
+    // The host runs the validation itself, before anything leaves the machine. A worker's report is not evidence.
+    const validation = await this.host.validate(input.directory)
+    if (!validation.passed) throw new Error(`Refusing to deliver: ${validation.detail ?? 'validation did not pass'}`)
     const defaultBranch = await this.host.defaultBranch()
     if (settings.disallowDefaultBranchCommit && !branchAllowed(input.branch, defaultBranch)) {
       throw new Error(`Refusing to deliver to ${input.branch}: it is the default branch`)

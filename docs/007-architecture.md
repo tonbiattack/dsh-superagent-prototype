@@ -325,6 +325,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/autopilot-recovery.ts` | `recover`: what a restart does with a job that was running, from its Ticket, its branch and its commit; and which states a person may pause, resume or skip |
 | `src/app/autopilot-locks.ts` | Prototype per-issue file locks scoped to one state directory; cross-directory exclusion is not established |
 | `src/app/autopilot-workspace.ts` | Where a job's work runs: its own repository's checkout, and the proof that the checkout's `origin` is that repository |
+| `src/app/autopilot-validation.ts` | `validate`: the host runs the operator's validation command itself and reads its exit status, so a worker's report is never evidence |
 | `src/app/views/autopilot.ts` | The autopilot page: its settings, its health, each repository's active jobs, and every job with its state and result |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
@@ -433,6 +434,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/autopilot-delivery.spec.ts` | Merge-rule unit tests and delivery safety guard; unfinished delivery scenarios are skipped |
 | `tests/autopilot-recovery.spec.ts` | Recovery: what a restart does with a running job, the per-issue lock across processes, and the pause, resume, skip and retry a person asks for |
 | `tests/autopilot-workspace.spec.ts` | Each repository's own checkout, the remote URLs that name it, and the refusal of a checkout of another repository |
+| `tests/autopilot-validation.spec.ts` | The host's own validation: a passing exit status, a failing one, a missing command, a missing checkout, and a command that cannot run |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
