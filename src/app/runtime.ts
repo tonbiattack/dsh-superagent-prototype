@@ -183,13 +183,13 @@ export class Runtime extends Service implements SourceHost {
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       // The prototype can inspect issues through each scoped gh transport. Dispatch remains disabled until isolation is proven.
       const queue = this.autopilotQueue = new AutopilotQueue(store)
-      const locks = this.autopilotLocks = new JobLocks(join(machine.stateDir, 'autopilot-locks'))
+      const locks = this.autopilotLocks = new JobLocks()
       const poller = new AutopilotPoller({ store, queue, commands: repository => commands.forRepository(repository),
         allowed: () => (store.settings().policy.sources.github?.allowed ?? []).map(entry => entry.id),
         settings: () => store.settings().autopilot })
       const scheduler = new AutopilotScheduler({ store, queue, locks, receive: trigger => passes.receive(trigger),
         trigger: job => this.autopilotTrigger(job), deliver: (job, ticket) => this.autopilotDeliver(job, ticket),
-        verify: job => this.autopilotVerify(job),
+        verify: job => this.autopilotVerify(job), checkout: job => this.autopilotCheckout(job),
         facts: (job, ticket) => this.autopilotFacts(job, ticket), paused: () => this.paused(), closing: () => this.closing() })
       this.autopilot = new Autopilot({ store, queue, poller, scheduler, health: board.claim('autopilot'),
         lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing(),
@@ -236,14 +236,20 @@ export class Runtime extends Service implements SourceHost {
     return root
   }
   /**
+   * The checkout a job's work runs in, which is also where its lock lives so every process shares it.
+   * @throws when the operator removed the repository, so its jobs cannot run anywhere.
+   */
+  private autopilotCheckout(job: AutopilotJob): string {
+    const root = workspaceRoot(job.repository, this.store.settings().autopilot, executionRoot(this.store.settings(), this.machine.stateDir))
+    if (!root) throw new Error(`The autopilot no longer watches ${job.repository}`)
+    return root
+  }
+  /**
    * Proves that a job's work will run in its own repository's checkout, before anything is dispatched.
    * @throws when the operator removed the repository, or its checkout belongs to another repository.
    */
   private async autopilotVerify(job: AutopilotJob): Promise<void> {
-    const settings = this.store.settings().autopilot
-    const root = workspaceRoot(job.repository, settings, executionRoot(this.store.settings(), this.machine.stateDir))
-    if (!root) throw new Error(`The autopilot no longer watches ${job.repository}`)
-    await verifyCheckout(this.commands.forRepository(job.repository), root, job.repository)
+    await verifyCheckout(this.commands.forRepository(job.repository), this.autopilotCheckout(job), job.repository)
   }
   /**
    * Builds the Trigger a queued job dispatches: the issue as it reads now, carrying the eligibility label the operator

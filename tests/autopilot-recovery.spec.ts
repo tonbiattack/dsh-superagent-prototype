@@ -1,11 +1,11 @@
 // The autopilot's recovery rules, its per-issue lock, and the pause, resume, skip and retry a person asks for.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Store } from '../src/app/store.ts'
 import { AutopilotQueue } from '../src/app/autopilot-queue.ts'
-import { JobLocks } from '../src/app/autopilot-locks.ts'
+import { JobLocks, lockDirectory } from '../src/app/autopilot-locks.ts'
 import { canPause, canResume, canSkip, recover, retryable, type RecoveryFacts } from '../src/app/autopilot-recovery.ts'
 
 const facts = (patch: Partial<RecoveryFacts> = {}): RecoveryFacts => ({ ticket: true, open: false, branch: true, commitLanded: false, ...patch })
@@ -77,32 +77,50 @@ describe('job commands', () => {
 
 describe('job locks', () => {
   let dir: string
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'autopilot-locks-')) })
+  let checkout: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'autopilot-locks-'))
+    // A checkout is a directory with a `.git` directory, which is where the locks live.
+    checkout = join(dir, 'checkout')
+    mkdirSync(join(checkout, '.git'), { recursive: true })
+  })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
   it('holds one lock per repository and issue, and refuses a second holder', async () => {
-    const locks = new JobLocks(dir)
-    expect(locks.tryAcquire('owner/one', 7)).toBeDefined()
+    const locks = new JobLocks()
+    expect(locks.tryAcquire('owner/one', 7, checkout)).toBeDefined()
     expect(locks.holds('owner/one', 7)).toBe(true)
     // A second holder of the same job is refused, which is what keeps two processes off one issue.
-    expect(new JobLocks(dir).tryAcquire('owner/one', 7)).toBeUndefined()
+    expect(new JobLocks().tryAcquire('owner/one', 7, checkout)).toBeUndefined()
     // Another issue is a different lock.
-    expect(new JobLocks(dir).tryAcquire('owner/one', 8)).toBeDefined()
+    expect(new JobLocks().tryAcquire('owner/one', 8, checkout)).toBeDefined()
     await locks.releaseAll()
   })
   it('frees the lock on release, so the next holder takes it', async () => {
-    const locks = new JobLocks(dir)
-    locks.tryAcquire('owner/one', 7)
+    const locks = new JobLocks()
+    locks.tryAcquire('owner/one', 7, checkout)
     await locks.release('owner/one', 7)
     expect(locks.holds('owner/one', 7)).toBe(false)
-    expect(new JobLocks(dir).tryAcquire('owner/one', 7)).toBeDefined()
+    expect(new JobLocks().tryAcquire('owner/one', 7, checkout)).toBeDefined()
   })
-  it('names the lock file after the repository and issue, so a person can see which job holds it', () => {
-    expect(new JobLocks(dir).path('owner/one', 7)).toContain('owner_one-issue-7.lock')
+  it('keeps the lock in the checkout, so processes with different state directories still exclude each other', () => {
+    expect(lockDirectory(checkout)).toBe(join(checkout, '.git', 'dsh-superagent-autopilot'))
+  })
+  it('follows a worktree\'s gitdir, so its locks are shared with the checkout it belongs to', () => {
+    const worktree = join(dir, 'worktree')
+    mkdirSync(worktree, { recursive: true })
+    writeFileSync(join(worktree, '.git'), `gitdir: ${join(checkout, '.git', 'worktrees', 'wt')}\n`)
+    expect(lockDirectory(worktree)).toBe(join(checkout, '.git', 'worktrees', 'wt', 'dsh-superagent-autopilot'))
+  })
+  it('refuses a lock for a directory that is not a checkout, so a job cannot run without one', () => {
+    const plain = join(dir, 'plain')
+    mkdirSync(plain, { recursive: true })
+    expect(lockDirectory(plain)).toBeUndefined()
+    expect(new JobLocks().tryAcquire('owner/one', 7, plain)).toBeUndefined()
   })
   it('releases every lock it holds, which shutdown does', async () => {
-    const locks = new JobLocks(dir)
-    locks.tryAcquire('owner/one', 7)
-    locks.tryAcquire('owner/two', 9)
+    const locks = new JobLocks()
+    locks.tryAcquire('owner/one', 7, checkout)
+    locks.tryAcquire('owner/two', 9, checkout)
     await locks.releaseAll()
     expect(locks.holds('owner/one', 7)).toBe(false)
     expect(locks.holds('owner/two', 9)).toBe(false)

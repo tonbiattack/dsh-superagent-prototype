@@ -24,6 +24,8 @@ export interface AutopilotSchedulerHost {
   facts(job: AutopilotJob, ticket: Ticket | undefined): Promise<RecoveryFacts>
   /** Holds one job's lock while its work runs, so two processes never run the same issue. */
   readonly locks: Pick<JobLocks, 'tryAcquire' | 'release'>
+  /** The checkout a job's work runs in, which is where its lock lives so every process shares it. */
+  checkout(job: AutopilotJob): string
   /**
    * Proves that the job's work will run in its own repository's checkout.
    * @throws when the checkout is missing or belongs to another repository, so work never lands in the wrong one.
@@ -61,8 +63,8 @@ export class AutopilotScheduler {
    * @returns the updated job, or undefined when the issue no longer yields a Trigger, in which case the job is skipped.
    */
   private async start(job: AutopilotJob): Promise<AutopilotJob | undefined> {
-    // One process runs a job at a time; a job another process holds waits for a later pass.
-    if (!this.host.locks.tryAcquire(job.repository, job.issue)) return undefined
+    // One process runs a job at a time; a job another process holds, or whose checkout cannot hold a lock, waits.
+    if (!this.host.locks.tryAcquire(job.repository, job.issue, this.host.checkout(job))) return undefined
     // The work must run in this repository's own checkout, proven before anything is dispatched.
     await this.host.verify(job)
     const trigger = await this.host.trigger(job)
@@ -137,7 +139,7 @@ export class AutopilotScheduler {
    */
   private async deliver(job: AutopilotJob, ticket: Ticket, result: DispatchResult): Promise<void> {
     // Delivery holds the job's lock too, so a second process cannot push or merge the same branch beside it.
-    if (!this.host.locks.tryAcquire(job.repository, job.issue)) return
+    if (!this.host.locks.tryAcquire(job.repository, job.issue, this.host.checkout(job))) return
     try {
       const delivered = await this.host.deliver(job, ticket)
       this.host.queue.update(job.repository, job.issue, { branch: job.branch ?? branchOf(job), commitSha: delivered.commitSha,

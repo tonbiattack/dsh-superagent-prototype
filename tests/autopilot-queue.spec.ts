@@ -221,7 +221,7 @@ describe('autopilot scheduler safety guard', () => {
     const verify = vi.fn()
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
     const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver: vi.fn(), facts: vi.fn(), verify,
-      locks: new JobLocks(join(dir, 'locks')), paused: () => false, closing: () => false })
+      checkout: () => '/srv/one', locks: new JobLocks(), paused: () => false, closing: () => false })
     const result = await pass.pass()
     expect(result.started).toEqual([])
     // Dispatch is disabled, so the checkout check is never reached and no work can start anywhere.
@@ -236,8 +236,8 @@ describe('autopilot scheduler safety guard', () => {
     const receive = vi.fn()
     const trigger = vi.fn()
     const deliver = vi.fn()
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts: vi.fn(), verify: vi.fn(),
-      locks: new JobLocks(join(dir, 'locks')), paused: () => false, closing: () => false })
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts: vi.fn(), verify: vi.fn(), checkout: () => '/srv/one',
+      locks: new JobLocks(), paused: () => false, closing: () => false })
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
     expect((await pass.pass()).started).toEqual([])
     expect(queue.get('owner/one', 7)).toMatchObject({ state: 'queued', error: expect.stringContaining('Dispatch disabled') })
@@ -274,8 +274,8 @@ describe.skip('autopilot scheduler pending verified implementation', () => {
     // The Engine stores a Trigger as it receives it, which is what the scheduler reads back.
     const receive = vi.fn((value: Trigger) => { store.triggers.save(value); return 'stored' })
     // The locks are real files under the test's temporary directory, so a second holder is refused as it is in production.
-    const locks = new JobLocks(join(dir, 'locks'))
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts, verify: async () => {}, locks,
+    const locks = new JobLocks()
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts, verify: async () => {}, checkout: () => '/srv/one', locks,
       paused: () => false, closing: () => false })
     store.saveSettings(SettingsSchema.parse({ autopilot: settings(patch) }))
     return { queue, pass, receive, locks }
@@ -293,8 +293,8 @@ describe.skip('autopilot scheduler pending verified implementation', () => {
     const receive = vi.fn()
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
     const pass = new AutopilotScheduler({ store, queue, receive, trigger: async () => undefined, deliver: async () => ({ pushed: false }),
-      facts: async () => ({ ticket: false, open: false, branch: false, commitLanded: false }), verify: async () => {},
-      locks: new JobLocks(join(dir, 'locks')), paused: () => true, closing: () => false })
+      facts: async () => ({ ticket: false, open: false, branch: false, commitLanded: false }), verify: async () => {}, checkout: () => '/srv/one',
+      locks: new JobLocks(), paused: () => true, closing: () => false })
     queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
     expect((await pass.pass()).started).toEqual([])
     expect(receive).not.toHaveBeenCalled()
@@ -457,8 +457,8 @@ describe.skip('autopilot scheduler pending verified implementation', () => {
     const { queue, pass, receive } = scheduler()
     queue.enqueue({ repository: 'owner/one', issue: 7, state: 'queued' })
     // Another process holds the job's lock, so this pass leaves it for a later one.
-    const other = new JobLocks(join(dir, 'locks'))
-    expect(other.tryAcquire('owner/one', 7)).toBeDefined()
+    const other = new JobLocks()
+    expect(other.tryAcquire('owner/one', 7, '/srv/one')).toBeDefined()
     expect((await pass.pass()).started).toEqual([])
     expect(receive).not.toHaveBeenCalled()
     expect(queue.get('owner/one', 7)?.state).toBe('queued')
