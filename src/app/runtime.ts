@@ -56,6 +56,7 @@ import type { RecoveryFacts } from './autopilot-recovery.ts'
 import { defaultBranchOf } from './autopilot-poller.ts'
 import { workspaceRoot, verifyCheckout } from './autopilot-workspace.ts'
 import { chooseWorkspace, type RouteDecision, type WorkspaceCandidate } from './autopilot-routing.ts'
+import { chooseSession, repositorySessionId, type SessionCandidate } from './autopilot-session.ts'
 import { validate } from './autopilot-validation.ts'
 import { autopilotTrigger } from '../sources/github-trigger.ts'
 import { readIssue } from '../sources/github-read.ts'
@@ -146,6 +147,7 @@ export class Runtime extends Service implements SourceHost {
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         workspaceRoot: ticket => runtime.autopilotWorkspace(ticket),
+        sessionFor: ticket => runtime.autopilotSession(ticket),
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
@@ -264,6 +266,31 @@ export class Runtime extends Service implements SourceHost {
       candidates.push({ path: workspace.path, title: workspace.title, sessionIds: workspace.sessionIds, matches, busy })
     }
     return chooseWorkspace({ candidates, checkout, settings })
+  }
+  /**
+   * The DSH session a job's work runs in, chosen when its ticket is prepared.
+   *
+   * A reused session keeps the repository's understanding and the prompt's common prefix, which is what makes a cache hit
+   * possible. It is never assumed: the session must exist, run in the job's own directory, and be idle, and a person's own
+   * session is only used when the operator explicitly allowed it.
+   */
+  private autopilotSession(ticket: Ticket): string | undefined {
+    const job = this.autopilotQueue.all().find(item => item.ticketId === ticket.id)
+    if (!job) return undefined
+    const settings = this.store.settings().autopilot
+    if (settings.sessionReuse === 'off') return undefined
+    const directory = job.route?.path ?? this.autopilotCheckout(job)
+    // Only sessions that run in this job's own directory are candidates, so another repository's session is never used.
+    const candidates: SessionCandidate[] = []
+    for (const workspace of this.ctx.workspaceRegistry?.list?.() ?? []) {
+      if (workspace.path !== directory) continue
+      for (const id of workspace.sessionIds) {
+        const agent = this.ctx.agents.get(id)
+        candidates.push({ id, cwd: workspace.path, busy: agent?.status === 'running', owned: id.startsWith('autopilot-repo-') })
+      }
+    }
+    const choice = chooseSession({ candidates, own: repositorySessionId(job.repositoryId), settings })
+    return choice.kind === 'reuse' ? choice.id : undefined
   }
   /**
    * The checkout a job's work runs in, which is also where its lock lives so every process shares it.

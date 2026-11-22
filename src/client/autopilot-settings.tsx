@@ -66,6 +66,12 @@ export function AutopilotSettings() {
               {(['checkout', 'wait'] as const).map(mode => <option key={mode} value={mode}>{t(`autopilotFallback.${mode}`)}</option>)}
             </select>
           </Field>
+          <Field label={t('autopilotSessionReuse')} hint={t('autopilotSessionReuseHint')}>
+            <select className="dt-select" value={value.sessionReuse} disabled={draft.busy}
+              onChange={event => edit({ sessionReuse: event.target.value as typeof value.sessionReuse })}>
+              {(['off', 'repository', 'any'] as const).map(mode => <option key={mode} value={mode}>{t(`autopilotSession.${mode}`)}</option>)}
+            </select>
+          </Field>
         </div>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('autopilotScheduling')}</h2>
