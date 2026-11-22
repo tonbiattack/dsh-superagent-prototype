@@ -55,6 +55,7 @@ import { JobLocks } from './autopilot-locks.ts'
 import type { RecoveryFacts } from './autopilot-recovery.ts'
 import { defaultBranchOf } from './autopilot-poller.ts'
 import { workspaceRoot, verifyCheckout } from './autopilot-workspace.ts'
+import { chooseWorkspace, type RouteDecision, type WorkspaceCandidate } from './autopilot-routing.ts'
 import { validate } from './autopilot-validation.ts'
 import { autopilotTrigger } from '../sources/github-trigger.ts'
 import { readIssue } from '../sources/github-read.ts'
@@ -190,6 +191,7 @@ export class Runtime extends Service implements SourceHost {
       const scheduler = new AutopilotScheduler({ store, queue, locks, receive: trigger => passes.receive(trigger),
         trigger: job => this.autopilotTrigger(job), deliver: (job, ticket) => this.autopilotDeliver(job, ticket),
         verify: job => this.autopilotVerify(job), checkout: job => this.autopilotCheckout(job),
+        route: job => this.autopilotRoute(job),
         facts: (job, ticket) => this.autopilotFacts(job, ticket), paused: () => this.paused(), closing: () => this.closing() })
       this.autopilot = new Autopilot({ store, queue, poller, scheduler, health: board.claim('autopilot'),
         lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing(),
@@ -230,10 +232,38 @@ export class Runtime extends Service implements SourceHost {
   private autopilotWorkspace(ticket: Ticket): string | undefined {
     const job = this.autopilotQueue.all().find(item => item.ticketId === ticket.id)
     if (!job) return undefined
+    // The route the job recorded is where its work was dispatched, so the ticket runs there rather than somewhere the
+    // settings would choose now; a workspace closed since then is caught by the checkout check before the worker starts.
+    if (job.route) return job.route.path
     const settings = this.store.settings().autopilot
     const root = workspaceRoot(job.repository, settings, executionRoot(this.store.settings(), this.machine.stateDir))
     if (!root) throw new Error(`The autopilot no longer watches ${job.repository}, so its work cannot run`)
     return root
+  }
+  /**
+   * Chooses where a job's work runs: an open DSH workspace of the same repository when one is safe, otherwise the
+   * configured checkout or a wait, as the operator chose.
+   *
+   * A workspace is only a candidate when its own checkout proves it is the job's repository, so a fork, a second clone or
+   * a directory that merely shares a name cannot receive another repository's work. A workspace whose session is running
+   * is not chosen, because a person's own turn must not be interrupted.
+   */
+  private async autopilotRoute(job: AutopilotJob): Promise<RouteDecision> {
+    const settings = this.store.settings().autopilot
+    const checkout = this.autopilotCheckout(job)
+    const commands = this.commands.forRepository(job.repository)
+    const candidates: WorkspaceCandidate[] = []
+    // A host without the workspace registry has no open workspaces to route to, so the configured checkout is used.
+    const workspaces = this.ctx.workspaceRegistry?.list?.() ?? []
+    for (const workspace of workspaces) {
+      // Only a workspace whose directory is a checkout of this repository is a candidate; the check reads that
+      // checkout's own `origin`, so a lookalike directory is refused rather than trusted by its name.
+      const matches = await verifyCheckout(commands, workspace.path, job.repository).then(() => true, () => false)
+      if (!matches) continue
+      const busy = workspace.sessionIds.some(id => this.ctx.agents.get(id)?.status === 'running')
+      candidates.push({ path: workspace.path, title: workspace.title, sessionIds: workspace.sessionIds, matches, busy })
+    }
+    return chooseWorkspace({ candidates, checkout, settings })
   }
   /**
    * The checkout a job's work runs in, which is also where its lock lives so every process shares it.

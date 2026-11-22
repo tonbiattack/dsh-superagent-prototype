@@ -16,6 +16,10 @@ export interface AutopilotJobView {
   prNumber?: number
   prUrl?: string
   mergeSha?: string
+  /** Where the job's work runs, and why that place was chosen. */
+  route?: { kind: 'workspace' | 'checkout'; path: string; title?: string; reason: string }
+  /** The DSH session the job's work runs in. */
+  sessionId?: string
   error?: string
   attempts: number
   createdAt: string
@@ -53,6 +57,7 @@ export function autopilotView(queue: Pick<AutopilotQueue, 'all'>, settings: Auto
       ...job.ticketId === undefined ? {} : { ticketId: job.ticketId }, ...job.branch === undefined ? {} : { branch: job.branch },
       ...job.commitSha === undefined ? {} : { commitSha: job.commitSha }, ...job.prNumber === undefined ? {} : { prNumber: job.prNumber },
       ...job.prUrl === undefined ? {} : { prUrl: job.prUrl }, ...job.mergeSha === undefined ? {} : { mergeSha: job.mergeSha },
+      ...job.route === undefined ? {} : { route: job.route }, ...job.sessionId === undefined ? {} : { sessionId: job.sessionId },
       ...job.error === undefined ? {} : { error: job.error },
     })),
     totals: { queued: count('queued'), running: count('running'), done: count('done'), failed: count('failed'), skipped: count('skipped'),

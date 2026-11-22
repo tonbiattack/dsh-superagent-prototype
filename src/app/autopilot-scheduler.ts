@@ -8,6 +8,7 @@ import type { AutopilotQueue } from './autopilot-queue.ts'
 import type { DeliveryResult } from './autopilot-delivery.ts'
 import { recover, type RecoveryFacts } from './autopilot-recovery.ts'
 import type { JobLocks } from './autopilot-locks.ts'
+import type { RouteDecision } from './autopilot-routing.ts'
 import type { Store } from './store.ts'
 
 /** Host dependencies of the scheduler. */
@@ -26,6 +27,11 @@ export interface AutopilotSchedulerHost {
   readonly locks: Pick<JobLocks, 'tryAcquire' | 'release'>
   /** The checkout a job's work runs in, which is where its lock lives so every process shares it. */
   checkout(job: AutopilotJob): string
+  /**
+   * Chooses where the job's work runs, and why: an open workspace of the same repository, the configured checkout, or a
+   * wait when nothing safe exists.
+   */
+  route(job: AutopilotJob): Promise<RouteDecision>
   /**
    * Proves that the job's work will run in its own repository's checkout.
    * @throws when the checkout is missing or belongs to another repository, so work never lands in the wrong one.
@@ -83,8 +89,15 @@ export class AutopilotScheduler {
    * @returns the updated job, or undefined when the issue no longer yields a Trigger, in which case the job is skipped.
    */
   private async start(job: AutopilotJob): Promise<AutopilotJob | undefined> {
+    // Where the work runs is decided first, because the lock lives in that directory and a job that must wait for a safe
+    // workspace must not take a lock it will not use.
+    const route = await this.host.route(job)
+    if (route.kind === 'wait') {
+      this.host.queue.update(job.repositoryId, job.issue, { error: route.reason })
+      return undefined
+    }
     // One process runs a job at a time; a job another process holds, or whose checkout cannot hold a lock, waits.
-    if (!this.host.locks.tryAcquire(job.repositoryId, job.issue, this.host.checkout(job))) return undefined
+    if (!this.host.locks.tryAcquire(job.repositoryId, job.issue, route.path)) return undefined
     // The work must run in this repository's own checkout, proven before anything is dispatched.
     await this.host.verify(job)
     const trigger = await this.host.trigger(job)
@@ -94,7 +107,9 @@ export class AutopilotScheduler {
       return undefined
     }
     // The attempt is counted before the Trigger is handed over, so a crash between the two cannot retry without bound.
-    this.host.queue.update(job.repositoryId, job.issue, { state: 'running', triggerId: trigger.id, attempts: job.attempts + 1, error: undefined })
+    this.host.queue.update(job.repositoryId, job.issue, { state: 'running', triggerId: trigger.id, attempts: job.attempts + 1,
+      error: undefined, route: { kind: route.kind, path: route.path, ...route.kind === 'workspace' ? { title: route.title } : {},
+        reason: route.reason } })
     this.host.receive(trigger)
     return this.host.queue.get(job.repositoryId, job.issue)
   }

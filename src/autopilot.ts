@@ -32,6 +32,10 @@ export interface AutopilotJob {
   mergeSha?: string
   /** Why the job failed or was skipped, in the words a person reads. */
   error?: string
+  /** Where the job's work runs, and why that place was chosen. */
+  route?: { kind: 'workspace' | 'checkout'; path: string; title?: string; reason: string }
+  /** The DSH session the job's work runs in, once it has one. */
+  sessionId?: string
   /** How many times dispatch was attempted, which bounds automatic retries. */
   attempts: number
   createdAt: string
