@@ -436,6 +436,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/autopilot-workspace.spec.ts` | Each repository's own checkout, the remote URLs that name it, and the refusal of a checkout of another repository |
 | `tests/autopilot-validation.spec.ts` | The host's own validation: a passing exit status, a failing one, a missing command, a missing checkout, and a command that cannot run |
 | `tests/autopilot-live.spec.ts` | The autopilot's GitHub reads against the real API, read-only, and only when `DSH_SUPERAGENT_LIVE_REPO` names a repository the agent's `gh` can read |
+| `tests/autopilot-runtime.spec.ts` | The autopilot end to end on a real Runtime: an Issue a listed account labelled becomes a Ticket, and a closed or unlabelled one does not |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
