@@ -1,5 +1,6 @@
 /** The autopilot's view: each watched repository, each job with its state, and the queue's totals. */
 import type { AutopilotJob, AutopilotSettings } from '../../autopilot.ts'
+import { cacheHitRate, type JobUsage } from '../autopilot-usage.ts'
 import type { AutopilotQueue } from '../autopilot-queue.ts'
 import type { Health } from '../../sources/host.ts'
 
@@ -20,6 +21,9 @@ export interface AutopilotJobView {
   route?: { kind: 'workspace' | 'checkout'; path: string; title?: string; reason: string }
   /** The DSH session the job's work runs in. */
   sessionId?: string
+  /** What the job's work cost, with the cache hit rate derived from the reported figures. */
+  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; calls: number
+    unreported: number; cacheHitRate?: number }
   error?: string
   attempts: number
   createdAt: string
@@ -38,7 +42,8 @@ export interface AutopilotView {
 /** The issue's page on GitHub, which the panel links to. */
 const issueUrl = (repository: string, issue: number): string => `https://github.com/${repository}/issues/${issue}`
 /** Builds the autopilot page from the queue, the settings and the health entry. */
-export function autopilotView(queue: Pick<AutopilotQueue, 'all'>, settings: AutopilotSettings, health: Health | undefined): AutopilotView {
+export function autopilotView(queue: Pick<AutopilotQueue, 'all'> & { usage?: (job: AutopilotJob) => JobUsage | undefined },
+  settings: AutopilotSettings, health: Health | undefined): AutopilotView {
   const jobs = queue.all()
   const count = (state: AutopilotJob['state']) => jobs.filter(job => job.state === state).length
   return {
@@ -51,15 +56,21 @@ export function autopilotView(queue: Pick<AutopilotQueue, 'all'>, settings: Auto
       running: jobs.filter(job => job.repository.toLowerCase() === entry.fullName.toLowerCase() && job.state === 'running').length,
     })),
     // Newest first, so the work a person just started is at the top.
-    jobs: jobs.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.issue - a.issue).map(job => ({
+    jobs: jobs.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.issue - a.issue).map(job => {
+      // The rate is derived from the reported figures, so a provider that omits one yields no rate rather than 0%.
+      const usage = queue.usage?.(job) ?? job.usage
+      const rate = usage === undefined ? undefined : cacheHitRate(usage)
+      return {
       repository: job.repository, issue: job.issue, state: job.state, url: issueUrl(job.repository, job.issue), attempts: job.attempts,
       createdAt: job.createdAt, updatedAt: job.updatedAt,
       ...job.ticketId === undefined ? {} : { ticketId: job.ticketId }, ...job.branch === undefined ? {} : { branch: job.branch },
       ...job.commitSha === undefined ? {} : { commitSha: job.commitSha }, ...job.prNumber === undefined ? {} : { prNumber: job.prNumber },
       ...job.prUrl === undefined ? {} : { prUrl: job.prUrl }, ...job.mergeSha === undefined ? {} : { mergeSha: job.mergeSha },
       ...job.route === undefined ? {} : { route: job.route }, ...job.sessionId === undefined ? {} : { sessionId: job.sessionId },
+      ...usage === undefined ? {} : { usage: { ...usage, ...rate === undefined ? {} : { cacheHitRate: rate } } },
       ...job.error === undefined ? {} : { error: job.error },
-    })),
+      }
+    }),
     totals: { queued: count('queued'), running: count('running'), done: count('done'), failed: count('failed'), skipped: count('skipped'),
       paused: count('paused') },
   }

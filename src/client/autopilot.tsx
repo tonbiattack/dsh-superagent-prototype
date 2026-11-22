@@ -39,6 +39,14 @@ function JobLine({ job, onChanged }: { job: AutopilotJobView; onChanged: () => P
         <span className="dt-hint">{job.route.reason}</span>
       </div>}
       {job.sessionId && <div className="dt-row-meta"><span className="dt-mono">{job.sessionId}</span></div>}
+      {job.usage && <div className="dt-row-meta">
+        {/* A figure the provider did not report is shown as unavailable, never as a confident zero. */}
+        <span>{t('autopilotUsageInput', { tokens: job.usage.inputTokens ?? t('autopilotUnavailableValue') })}</span>
+        <span>{t('autopilotUsageCached', { tokens: job.usage.cacheReadTokens ?? t('autopilotUnavailableValue') })}</span>
+        <span>{t('autopilotUsageHitRate', { rate: job.usage.cacheHitRate === undefined ? t('autopilotUnavailableValue')
+          : `${Math.round(job.usage.cacheHitRate * 100)}%` })}</span>
+        {job.usage.unreported > 0 && <span className="dt-hint">{t('autopilotUsageUnreported', { calls: job.usage.unreported })}</span>}
+      </div>}
       {job.error && <p className="dt-error">{job.error}</p>}
       <div className="dt-row-meta dt-row-buttons">
         {job.state === 'queued' && <Button variant="outline" size="sm" icon={<Icon name="pause" size={14} />}

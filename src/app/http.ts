@@ -30,6 +30,8 @@ import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { autopilotView } from './views/autopilot.ts'
 import type { AutopilotQueue } from './autopilot-queue.ts'
 import type { Autopilot } from './autopilot.ts'
+import type { JobUsage } from './autopilot-usage.ts'
+import type { AutopilotJob } from '../autopilot.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -45,6 +47,8 @@ export interface HttpHost {
   readonly autopilotQueue: Pick<AutopilotQueue, 'all' | 'named' | 'pause' | 'resume' | 'skip' | 'retry'>
   /** The autopilot service, whose tick the panel may ask for. */
   readonly autopilot: Pick<Autopilot, 'tick'>
+  /** What a job's work cost, read from its session's own model calls. */
+  autopilotUsage(job: AutopilotJob): JobUsage | undefined
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -219,7 +223,8 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
-    'GET autopilot': () => autopilotView(runtime.autopilotQueue, store.settings().autopilot, runtime.health.autopilot),
+    'GET autopilot': () => autopilotView({ all: () => runtime.autopilotQueue.all(), usage: job => runtime.autopilotUsage(job) },
+      store.settings().autopilot, runtime.health.autopilot),
     'POST autopilot/:repository/:issue/pause': ({ params }) => ({ state: jobCommand(runtime, params, 'pause') }),
     'POST autopilot/:repository/:issue/resume': ({ params }) => ({ state: jobCommand(runtime, params, 'resume') }),
     'POST autopilot/:repository/:issue/skip': ({ params }) => ({ state: jobCommand(runtime, params, 'skip') }),
