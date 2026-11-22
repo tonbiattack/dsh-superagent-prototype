@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AutopilotConfigSchema } from '../src/policy.ts'
 import { Delivery, mergeVerdict, pullBody, pullTitle, type DeliveryHost, type MergeFacts } from '../src/app/autopilot-delivery.ts'
+import type { ValidationResult } from '../src/app/autopilot-validation.ts'
 import { CliError } from '../src/infra/commands.ts'
 import type { Commands } from '../src/infra/commands.ts'
 
@@ -93,10 +94,11 @@ function fake(state: {
   } as unknown as Commands
   return { commands, calls }
 }
-const delivery = (state: Parameters<typeof fake>[0] = {}, patch: Record<string, unknown> = {}) => {
+const delivery = (state: Parameters<typeof fake>[0] = {}, patch: Record<string, unknown> = {},
+  validation: ValidationResult = { passed: true, command: 'npm test' }) => {
   const { commands, calls } = fake(state)
   const host: DeliveryHost = { commands, settings: () => settings(patch), defaultBranch: async () => 'main',
-    headSha: async () => 'abc' }
+    headSha: async () => 'abc', validate: async () => validation }
   return { deliver: new Delivery(host), calls }
 }
 const input = { repository: 'owner/one', issue: 12, branch: 'agent/issue-12', directory: '/srv/one', summary: 'Reworked the parser.' }

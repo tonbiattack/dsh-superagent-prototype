@@ -125,6 +125,13 @@ export const AutopilotConfigSchema = z.object({
   autoComment: z.boolean().default(false),
   requireAllowedActor: z.boolean().default(true),
   disallowDefaultBranchCommit: z.boolean().default(true),
+  /**
+   * The command the host runs itself to validate a job's work, in the job's own checkout. A worker's report is not
+   * evidence that the tests passed, so delivery reads this command's exit status instead.
+   */
+  validationCommand: z.string().trim().max(LIMITS.autopilotValidationCommand).default(''),
+  validationTimeoutSeconds: z.number().int().min(LIMITS.autopilotValidationTimeoutSeconds.min)
+    .max(LIMITS.autopilotValidationTimeoutSeconds.max).default(1800),
 }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),

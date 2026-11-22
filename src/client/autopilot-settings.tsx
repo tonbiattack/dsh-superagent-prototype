@@ -22,10 +22,12 @@ export function AutopilotSettings() {
   // Numbers are edited as text and parsed on save, so a half-typed value is not rejected while typing.
   const saved = { ...autopilot, pollSeconds: String(autopilot.pollSeconds), maxConcurrentGlobal: String(autopilot.maxConcurrentGlobal),
     maxConcurrentPerRepo: String(autopilot.maxConcurrentPerRepo), maxFixAttempts: String(autopilot.maxFixAttempts),
+    validationTimeoutSeconds: String(autopilot.validationTimeoutSeconds),
     repositories: autopilot.repositories.map(entry => `${entry.fullName} ${entry.checkout}`.trim()).join('\n') }
   const draft = useBlockDraft('autopilot', saved, blocks.autopilot.revision, value => ({ ...value,
     pollSeconds: numberOf(value.pollSeconds), maxConcurrentGlobal: numberOf(value.maxConcurrentGlobal),
     maxConcurrentPerRepo: numberOf(value.maxConcurrentPerRepo), maxFixAttempts: numberOf(value.maxFixAttempts),
+    validationTimeoutSeconds: numberOf(value.validationTimeoutSeconds),
     // One repository per line, `owner/name` then an optional absolute checkout path.
     repositories: value.repositories.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
       const [fullName = '', ...rest] = line.split(/\s+/)
@@ -69,6 +71,14 @@ export function AutopilotSettings() {
           <Field label={t('autopilotMaxFixAttempts')} hint={t('autopilotMaxFixAttemptsHint')}>
             <Input type="number" min={LIMITS.autopilotMaxFixAttempts.min} max={LIMITS.autopilotMaxFixAttempts.max} required
               value={value.maxFixAttempts} onChange={event => edit({ maxFixAttempts: event.target.value })} />
+          </Field>
+          <Field label={t('autopilotValidationCommand')} hint={t('autopilotValidationCommandHint')}>
+            <Input className="dt-mono" maxLength={LIMITS.autopilotValidationCommand} value={value.validationCommand} spellCheck={false}
+              placeholder={t('autopilotValidationCommandEmpty')} onChange={event => edit({ validationCommand: event.target.value })} />
+          </Field>
+          <Field label={t('autopilotValidationTimeout')} hint={t('autopilotValidationTimeoutHint')}>
+            <Input type="number" min={LIMITS.autopilotValidationTimeoutSeconds.min} max={LIMITS.autopilotValidationTimeoutSeconds.max}
+              required value={value.validationTimeoutSeconds} onChange={event => edit({ validationTimeoutSeconds: event.target.value })} />
           </Field>
         </div>
         <div className="dt-form dt-block">

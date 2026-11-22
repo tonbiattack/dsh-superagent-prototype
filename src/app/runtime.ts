@@ -55,6 +55,7 @@ import { JobLocks } from './autopilot-locks.ts'
 import type { RecoveryFacts } from './autopilot-recovery.ts'
 import { defaultBranchOf } from './autopilot-poller.ts'
 import { workspaceRoot, verifyCheckout } from './autopilot-workspace.ts'
+import { validate } from './autopilot-validation.ts'
 import { autopilotTrigger } from '../sources/github-trigger.ts'
 import { readIssue } from '../sources/github-read.ts'
 import type { AutopilotJob } from '../autopilot.ts'
@@ -266,6 +267,7 @@ export class Runtime extends Service implements SourceHost {
     const branch = `agent/${ticket.execution?.name ?? branchOf(job)}`
     const delivery = new Delivery({ commands, settings: () => this.store.settings().autopilot,
       defaultBranch: () => defaultBranchOf(commands),
+      validate: directory => validate(this.store.settings().autopilot, directory, this.lifetime),
       headSha: async (directory, ref) => (await commands.git(['rev-parse', ref], directory)).trim() || undefined })
     return delivery.deliver({ repository: job.repository, issue: job.issue, branch, directory: ticket.execution?.directory ?? '',
       summary: latestReport(ticket)?.summary ?? '' })

@@ -14,4 +14,6 @@ export const LIMITS = {
   autopilotMaxFixAttempts: { min: 1, max: 10 },
   autopilotLabel: 50,
   autopilotRepositories: 20,
+  autopilotValidationCommand: 2000,
+  autopilotValidationTimeoutSeconds: { min: 30, max: 3600 },
 } as const
