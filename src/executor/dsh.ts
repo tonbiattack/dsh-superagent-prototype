@@ -22,6 +22,11 @@ import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubag
 const now = (): string => new Date().toISOString()
 /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
 export const workerSessionId = (ticketId: string): string => `worker-${ticketId}`
+/**
+ * The session a ticket's work runs in: the one its execution records, or its own worker session. A ticket that reuses a
+ * repository's session records it, so every part of the Executor agrees on where the work is.
+ */
+export const sessionOf = (ticket: Pick<Ticket, 'id' | 'execution'>): string => ticket.execution?.sessionId ?? workerSessionId(ticket.id)
 /** Returns the ticket ID for a worker session ID (`worker-<ticketId>`), or undefined for non-worker sessions. */
 export const ticketOfSession = (sessionId: string): string | undefined => sessionId.startsWith('worker-') ? sessionId.slice('worker-'.length) : undefined
 /** Maximum runtime for a workspace prepare command. */
@@ -84,6 +89,11 @@ export interface ExecutorHost {
    * repository checkout. Undefined keeps the configured root.
    */
   workspaceRoot?(ticket: Ticket): string | undefined
+  /**
+   * The DSH session a ticket's work should reuse, when the host chose one. Undefined keeps the ticket's own worker session,
+   * which is what every ticket used before sessions could be reused.
+   */
+  sessionFor?(ticket: Ticket): string | undefined
 }
 /** Looks up a ticket's origin trigger in Store. */
 export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
@@ -242,7 +252,10 @@ export class DshExecutor implements Executor {
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
     const root = this.host.workspaceRoot?.(ticket)
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, root) }
+    const execution = ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, root)
+    // A session the host chose to reuse is recorded on the ticket, so every part of the Executor agrees where the work is.
+    const sessionId = this.host.sessionFor?.(ticket)
+    return { ...ticket, execution: sessionId === undefined ? execution : { ...execution, sessionId } }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -307,7 +320,7 @@ export class DshExecutor implements Executor {
         const inputId = ticket?.undelivered[0]
         if (!ticket || !assignment || inputId === undefined) return
         // Waking an idle worker reserves a slot (including the extra slot reserved for human follow-ups).
-        const sessionId = workerSessionId(ticketId)
+        const sessionId = sessionOf(ticket)
         if (!woken && !this.running(ticket)) {
           // A person's message wakes its worker ahead of new launches, in the slot kept for it.
           const person = ticket.undelivered.some(id => fromPerson(ticket.inputs.find(item => item.id === id)))
@@ -345,7 +358,7 @@ export class DshExecutor implements Executor {
     const message = inputMessage(input, trigger)
     if (message === undefined) return
     const text = message.length > ASSIGNMENT_CHARS ? JSON.stringify(capped(message, ASSIGNMENT_CHARS, inputResource(ticket.id, input.id))) : message
-    await this.host.sessions.prompt(workerSessionId(ticket.id), input.id, text, 'steer', live)
+    await this.host.sessions.prompt(sessionOf(ticket), input.id, text, 'steer', live)
   }
   /** Formats a trigger on `ticket` for the worker, including a preview of the replied-to message when the worker has not yet seen it. */
   private async triggerCard(ticket: Ticket, triggerId: string, note?: string): Promise<object | undefined> {
@@ -365,7 +378,7 @@ export class DshExecutor implements Executor {
     const report = assignment.report
     const busy = !!assignment.deliveredAt && !!report && assignment.deliveredAt >= report.at
     const ownTurn = (report?.state === 'ready' || report?.state === 'dropped') && !busy
-    const sessionId = workerSessionId(ticket.id)
+    const sessionId = sessionOf(ticket)
     this.host.store.afterCommit(() => {
       this.settling.get(ticket.id)?.abort()
       if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
@@ -376,7 +389,10 @@ export class DshExecutor implements Executor {
   }
   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
   private stopWork(ticketId: string, reason: string, keepInbox = false): void {
-    this.track(ticketId, stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox))
+    const ticket = this.host.store.tickets.get(ticketId)
+    // A ticket that is gone has no session to stop; its own worker session is the only one it could have had.
+    const sessionId = ticket ? sessionOf(ticket) : workerSessionId(ticketId)
+    this.track(ticketId, stopBackground(this.host.context, sessionId, reason, keepInbox))
   }
   /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
   private track(ticketId: string, stop: Promise<void>): void {
@@ -395,7 +411,7 @@ export class DshExecutor implements Executor {
    * of the jobs left to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
    */
   async shutdown(): Promise<void> {
-    const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(workerSessionId(ticket.id) as SessionId))
+    const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(sessionOf(ticket) as SessionId))
       .filter((agent): agent is Agent => agent !== undefined)
     const stop = async () => {
       await Promise.allSettled(agents.map(agent => stopBackground(this.host.context, agent.id, 'dsh-superagent stopped', true)))
@@ -411,7 +427,7 @@ export class DshExecutor implements Executor {
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
     if (!runningAssignment(ticket)) return false
-    return this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
+    return this.host.context.agents.get(sessionOf(ticket) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
   }
   /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
   private launchFailed(ticketId: string, assignmentId: string, error: unknown): void {
@@ -443,7 +459,7 @@ export class DshExecutor implements Executor {
       if (!current()) return
     }
     if (!current()) return
-    const sessionId = workerSessionId(ticket.id)
+    const sessionId = sessionOf(ticket)
     const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
@@ -534,7 +550,7 @@ export class DshExecutor implements Executor {
       if (running) {
         // A restart within this process left DSH's Sessions, jobs and subagents running: they stop first. The inbox keeps an
         // Input that was handed over but not yet taken.
-        this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
+        this.host.context.agents.get(sessionOf(ticket) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
         this.stopWork(ticket.id, 'dsh-superagent restarted', true)
         this.host.engine.assignmentInterrupted(ticket.id, running.id)
       }
@@ -568,7 +584,7 @@ export class DshExecutor implements Executor {
       if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
       // Wait while processing is paused or no wake slot is free.
       if (this.host.paused()) { this.after(SLOT_WAIT_MS, go); return }
-      const sessionId = workerSessionId(ticketId)
+      const sessionId = sessionOf(ticket)
       const waking = !this.running(ticket)
       try { if (waking) this.slots.reserve(ticketId, 'wake') } catch (failure) {
         if (!(failure instanceof Later)) throw failure
@@ -650,7 +666,7 @@ export class DshExecutor implements Executor {
     if (!quiet) {
       // Its shell jobs that ran past the limit are killed, which it is told at its next turn; its subagents, whose stop would
       // wake it, go on.
-      const sessionId = workerSessionId(ticket.id), minutes = BACKGROUND_LIMIT_MS / 60_000
+      const sessionId = sessionOf(ticket), minutes = BACKGROUND_LIMIT_MS / 60_000
       const jobs = runningJobs(this.host.context, sessionId, left).map(job => job.name)
       if (jobs.length) {
         void this.background(killJobs(this.host.context, sessionId, 'The job ran past its limit', left))

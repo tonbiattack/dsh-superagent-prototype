@@ -146,6 +146,12 @@ export const AutopilotConfigSchema = z.object({
    * stricter choice, because it never runs a job somewhere the operator did not intend.
    */
   workspaceFallback: z.enum(['checkout', 'wait']).default('checkout'),
+  /**
+   * Which DSH session a job's work runs in. `off` creates one per job; `repository` reuses the session dsh-superagent keeps
+   * for the repository, which keeps its understanding of it; `any` may also reuse a person's idle session, which the
+   * operator must choose explicitly because it puts the job into a session a person owns.
+   */
+  sessionReuse: z.enum(['off', 'repository', 'any']).default('repository'),
 }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
