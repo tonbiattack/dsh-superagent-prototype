@@ -35,10 +35,15 @@ async function enabled(patch: Record<string, unknown> = {}, listed: ReturnType<t
   // `startRuntime` installs its own `gh` and `run` spies, so the checkout's answers are installed after it, or they are
   // overwritten and every read falls back to the fixture's repository.
   // `Commands.git` runs `git` through `run`, so the checkout's own commands are answered there.
-  const git = async (args: string[]) => {
+  const git = async (args: string[], cwd?: string) => {
     // `rev-parse --show-toplevel` proves the directory is a checkout; `remote get-url origin` proves whose it is.
-    if (args[0] === 'rev-parse') return `${checkout}\n`
+    if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return `${cwd ?? checkout}\n`
+    // A worktree is on the branch it was created for, which is what the job's work commits to.
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'agent/issue-7\n'
+    if (args[0] === 'rev-parse') return ''
     if (args[0] === 'remote') return 'https://github.com/acme/widgets.git\n'
+    // A clean checkout, so a worktree may be created from it.
+    if (args[0] === 'status') return ''
     return ''
   }
   vi.spyOn(Commands.prototype, 'git').mockImplementation(git)
@@ -65,8 +70,8 @@ async function enabled(patch: Record<string, unknown> = {}, listed: ReturnType<t
   }
   // `Commands.gh` parses the CLI's JSON, so the fake answers with the object and `run` serialises it.
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(gh)
-  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (program: string, args: string[]) => {
-    if (program === 'git') return git(args)
+  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (program: string, args: string[], cwd?: string) => {
+    if (program === 'git') return git(args, cwd)
     // The agent's GitHub CLI, which `gh` parses as JSON; the fixture's CLI path is `/bin/false`, so the program is not `gh`.
     if (args[0] === 'api') return JSON.stringify(await gh(args))
     return '{"ok":true,"data":{}}'
@@ -137,7 +142,10 @@ it('runs two repositories independently, each in its own checkout', async () => 
   // Each repository's own remote, so a checkout of one is refused for the other. `git` takes its directory as `cwd`.
   vi.spyOn(Commands.prototype, 'git').mockImplementation(async (args: string[], cwd: string) => {
     const gadgets = cwd === second
-    if (args[0] === 'rev-parse') return `${cwd}\n`
+    if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return `${cwd}\n`
+    // A worktree is on the branch it was created for, which is what the job's work commits to.
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'agent/issue-7\n'
+    if (args[0] === 'rev-parse') return ''
     if (args[0] === 'remote') return `https://github.com/${gadgets ? 'acme/gadgets' : 'acme/widgets'}.git\n`
     return ''
   })
@@ -145,7 +153,9 @@ it('runs two repositories independently, each in its own checkout', async () => 
   vi.spyOn(Commands.prototype, 'run').mockImplementation(async (program: string, args: string[], cwd?: string) => {
     if (program !== 'git') return '{"ok":true,"data":{}}'
     const gadgets = cwd === second
-    if (args[0] === 'rev-parse') return `${cwd}\n`
+    if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return `${cwd}\n`
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'agent/issue-7\n'
+    if (args[0] === 'rev-parse') return ''
     if (args[0] === 'remote') return `https://github.com/${gadgets ? 'acme/gadgets' : 'acme/widgets'}.git\n`
     return ''
   })

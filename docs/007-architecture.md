@@ -327,6 +327,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/autopilot-workspace.ts` | Where a job's work runs: its own repository's checkout, and the proof that the checkout's `origin` is that repository |
 | `src/app/autopilot-routing.ts` | `chooseWorkspace`: an open DSH workspace of the same repository when one is idle, otherwise the configured checkout or a wait, and the reason it chose |
 | `src/app/autopilot-session.ts` | `chooseSession`: the DSH session a job runs in — its own, or one reused for the repository — and why; a running or another repository's session is never reused |
+| `src/app/autopilot-session-locks.ts` | `SessionLocks`: one lock per DSH session, so two jobs never share one conversation |
+| `src/app/autopilot-worktree.ts` | `ensureWorktree`: the job's own worktree on its own branch, created from the checkout without touching it; a checkout with uncommitted changes is refused |
 | `src/app/autopilot-validation.ts` | `validate`: the host runs the operator's validation command itself and reads its exit status, so a worker's report is never evidence |
 | `src/app/views/autopilot.ts` | The autopilot page: its settings, its health, each repository's active jobs, and every job with its state and result |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
@@ -438,6 +440,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/autopilot-workspace.spec.ts` | Each repository's own checkout, the remote URLs that name it, and the refusal of a checkout of another repository |
 | `tests/autopilot-routing.spec.ts` | Workspace routing: an idle workspace of the same repository, a busy one, another repository's, the operator's preference, and the deterministic choice |
 | `tests/autopilot-session.spec.ts` | Session choice: the repository's own session, reuse off, a running session, a person's session only when allowed, and the deterministic choice |
+| `tests/autopilot-worktree.spec.ts` | The job's own worktree on its own branch, a dirty checkout refused, a worktree on another branch refused, and the per-session lock |
 | `tests/autopilot-validation.spec.ts` | The host's own validation: a passing exit status, a failing one, a missing command, a missing checkout, and a command that cannot run |
 | `tests/autopilot-live.spec.ts` | The autopilot's GitHub reads against the real API, read-only, and only when `DSH_SUPERAGENT_LIVE_REPO` names a repository the agent's `gh` can read |
 | `tests/autopilot-runtime.spec.ts` | The autopilot end to end on a real Runtime: an Issue a listed account labelled becomes a Ticket, and a closed or unlabelled one does not |
