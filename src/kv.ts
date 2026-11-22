@@ -4,6 +4,7 @@
  */
 import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
+import type { AutopilotJob } from './autopilot.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
 
@@ -55,4 +56,13 @@ export const KV = {
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
+  /**
+   * Autopilot: one durable job per repository and issue (`jobKey`), the poller's per-repository cursor, and the
+   * repository facts the poller reads once (its immutable ID and default branch).
+   */
+  autopilot: { job: family<AutopilotJob, [key: string]>('autopilot-job:'),
+    /** The newest issue update the poller has read, per repository, so a poll reads only what changed. */
+    since: family<string, [repository: string]>('autopilot-since:'),
+    /** A repository's immutable ID and default branch, read once and kept so a rename does not lose its jobs. */
+    repository: family<{ id?: number; defaultBranch?: string }, [repository: string]>('autopilot-repository:') },
 }

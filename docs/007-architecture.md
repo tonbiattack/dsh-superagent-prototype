@@ -295,6 +295,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
+| `src/autopilot.ts` | The autopilot's rules, shared with the panel: the job record and its states, eligibility by label and allowed author, the queue's capacity and next job, the branch a job commits to, and the refusal to commit to the default branch |
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
 | `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take |
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
@@ -316,6 +317,15 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
 | `src/app/passes.ts` | Passes, the pass scheduler |
+| `src/app/autopilot.ts` | The autopilot service: the polling loop, one tick that polls then schedules, and the `autopilot` health entry |
+| `src/app/autopilot-queue.ts` | `AutopilotQueue`: the durable job records, one per repository and issue, and the only writer of them |
+| `src/app/autopilot-poller.ts` | `AutopilotPoller`: reads each watched repository's open issues through the agent's `gh`, queues the eligible ones, and skips a queued job whose issue closed or lost its label |
+| `src/app/autopilot-scheduler.ts` | Unfinished scheduler prototype; dispatch and delivery remain disabled pending safety verification |
+| `src/app/autopilot-delivery.ts` | Unfinished `Delivery` prototype; external writes are disabled pending validation, identity, and branch-protection work |
+| `src/app/autopilot-recovery.ts` | `recover`: what a restart does with a job that was running, from its Ticket, its branch and its commit; and which states a person may pause, resume or skip |
+| `src/app/autopilot-locks.ts` | Prototype per-issue file locks scoped to one state directory; cross-directory exclusion is not established |
+| `src/app/autopilot-workspace.ts` | Where a job's work runs: its own repository's checkout, and the proof that the checkout's `origin` is that repository |
+| `src/app/views/autopilot.ts` | The autopilot page: its settings, its health, each repository's active jobs, and every job with its state and result |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
@@ -376,6 +386,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
 | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
+| `src/client/autopilot.tsx` | Autopilot status and job controls; unfinished execution is explicitly marked unavailable |
+| `src/client/autopilot-settings.tsx` | Autopilot settings draft and safety warning |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
 | `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, and the Decision filters of the Eval status |
 | `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, and the route memory with the settings group opened last |
@@ -416,6 +428,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
+| `tests/autopilot.spec.ts` | The autopilot's rules: eligibility by label and allowed author, the queue's capacity and order, the branch a job commits to, and the refusal to commit to the default branch |
+| `tests/autopilot-queue.spec.ts` | Queue and polling tests, plus a dispatch guard; unfinished scheduler scenarios are skipped |
+| `tests/autopilot-delivery.spec.ts` | Merge-rule unit tests and delivery safety guard; unfinished delivery scenarios are skipped |
+| `tests/autopilot-recovery.spec.ts` | Recovery: what a restart does with a running job, the per-issue lock across processes, and the pause, resume, skip and retry a person asks for |
+| `tests/autopilot-workspace.spec.ts` | Each repository's own checkout, the remote URLs that name it, and the refusal of a checkout of another repository |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |

@@ -109,6 +109,8 @@ interface Received { source?: string; scope?: Record<string, unknown>; row?: str
  * - `followup`: a message on a Thread that has tickets;
  * - `admission`: the cell of the receiving scope's admission row; `observation` when it made an inferred candidate under
  *   an accept mode;
+ * - `autopilot`: an issue an operator opted in by label, written by a sender on the list, which the autopilot took up
+ *   without the agent being addressed; `label` names the label and `issue` the issue number;
  * - `listed`: accepted before Mandates recorded their basis, from a sender who must still be on the list; `authority` is
  *   what an earlier version recorded instead.
  * `sender` names the allowed sender at acceptance time, and `rules` the rules an assessment matched.
@@ -117,6 +119,8 @@ export type MandateBasis = Received & { sender?: string; rules?: string[] } & (
   | { via: 'addressed'; addressed: 'mention' | 'direct' }
   | { via: 'followup'; authority?: string }
   | { via: 'admission'; cell: AdmissionCell; addressed?: 'mention' | 'direct'; observation?: { mode: AcceptMode } }
+  /** An issue an operator opted in by label: the label is the addressing, and the author must stay on the list. */
+  | { via: 'autopilot'; label: string; issue: number }
   | { via: 'listed'; addressed?: 'mention' | 'direct'; observation?: { mode?: AcceptMode }; authority?: string }
   /** A message of a bot on its Source's bot list: an inferred candidate at most, never an explicit request or a stop. */
   | { via: 'bot'; addressed?: 'mention' | 'direct'; observation: { mode: AcceptMode } }

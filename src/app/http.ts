@@ -27,6 +27,9 @@ import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
+import { autopilotView } from './views/autopilot.ts'
+import type { AutopilotQueue } from './autopilot-queue.ts'
+import type { Autopilot } from './autopilot.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -38,6 +41,10 @@ export interface HttpHost {
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
+  /** The autopilot's job queue, which the panel reads and commands. */
+  readonly autopilotQueue: Pick<AutopilotQueue, 'all' | 'pause' | 'resume' | 'skip' | 'retry'>
+  /** The autopilot service, whose tick the panel may ask for. */
+  readonly autopilot: Pick<Autopilot, 'tick'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -145,8 +152,24 @@ const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.litera
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
-const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
+const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor', 'autopilot']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+/**
+ * Runs a person's command on one autopilot job, answering its new state.
+ * @throws RouteError when the job is unknown, or the command does not apply to its state.
+ */
+function jobCommand(runtime: HttpHost, params: { repository: string; issue: string }, command: 'pause' | 'resume' | 'skip' | 'retry'): string {
+  const issue = Number(params.issue)
+  if (!Number.isInteger(issue) || issue <= 0) throw new RouteError(404, 'Job not found')
+  const queue = runtime.autopilotQueue
+  let job
+  try { job = queue[command](params.repository, issue) }
+  catch (error) { throw new RouteError(400, error instanceof Error ? error.message : String(error)) }
+  if (!job) throw new RouteError(404, 'Job not found')
+  // A command that frees a job lets the next pass start it at once.
+  runtime.requestPass()
+  return job.state
+}
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
@@ -193,6 +216,16 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
+    'GET autopilot': () => autopilotView(runtime.autopilotQueue, store.settings().autopilot, runtime.health.autopilot),
+    'POST autopilot/:repository/:issue/pause': ({ params }) => ({ state: jobCommand(runtime, params, 'pause') }),
+    'POST autopilot/:repository/:issue/resume': ({ params }) => ({ state: jobCommand(runtime, params, 'resume') }),
+    'POST autopilot/:repository/:issue/skip': ({ params }) => ({ state: jobCommand(runtime, params, 'skip') }),
+    'POST autopilot/:repository/:issue/retry': ({ params }) => ({ state: jobCommand(runtime, params, 'retry') }),
+    'POST autopilot/poll': async () => {
+      const { polls, failures } = await runtime.autopilot.tick()
+      runtime.requestPass()
+      return { polls, failures }
+    },
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
       const known = !block.startsWith('source:') || runtime.sources.instances().some(instance => `source:${instance.id}` === block)

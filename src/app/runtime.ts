@@ -13,12 +13,12 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, key, liveTicket, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
-import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
+import { environmentOf, executionRoot, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
@@ -46,6 +46,19 @@ import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+import { AutopilotQueue } from './autopilot-queue.ts'
+import { AutopilotPoller } from './autopilot-poller.ts'
+import { AutopilotScheduler, branchOf } from './autopilot-scheduler.ts'
+import { Autopilot } from './autopilot.ts'
+import { Delivery, branchHead, pullMerged, type DeliveryResult } from './autopilot-delivery.ts'
+import { JobLocks } from './autopilot-locks.ts'
+import type { RecoveryFacts } from './autopilot-recovery.ts'
+import { defaultBranchOf } from './autopilot-poller.ts'
+import { workspaceRoot, verifyCheckout } from './autopilot-workspace.ts'
+import { autopilotTrigger } from '../sources/github-trigger.ts'
+import { readIssue } from '../sources/github-read.ts'
+import type { AutopilotJob } from '../autopilot.ts'
+import { latestReport } from '../core/index.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -70,6 +83,9 @@ export class Runtime extends Service implements SourceHost {
   readonly outbox: Outbox
   readonly engine: Engine
   readonly passes: Passes
+  readonly autopilotQueue: AutopilotQueue
+  readonly autopilotLocks: JobLocks
+  readonly autopilot: Autopilot
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
@@ -127,6 +143,7 @@ export class Runtime extends Service implements SourceHost {
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
+        workspaceRoot: ticket => runtime.autopilotWorkspace(ticket),
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
@@ -163,6 +180,19 @@ export class Runtime extends Service implements SourceHost {
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
+      // The prototype can inspect issues through each scoped gh transport. Dispatch remains disabled until isolation is proven.
+      const queue = this.autopilotQueue = new AutopilotQueue(store)
+      const locks = this.autopilotLocks = new JobLocks(join(machine.stateDir, 'autopilot-locks'))
+      const poller = new AutopilotPoller({ store, queue, commands: repository => commands.forRepository(repository),
+        allowed: () => (store.settings().policy.sources.github?.allowed ?? []).map(entry => entry.id),
+        settings: () => store.settings().autopilot })
+      const scheduler = new AutopilotScheduler({ store, queue, locks, receive: trigger => passes.receive(trigger),
+        trigger: job => this.autopilotTrigger(job), deliver: (job, ticket) => this.autopilotDeliver(job, ticket),
+        verify: job => this.autopilotVerify(job),
+        facts: (job, ticket) => this.autopilotFacts(job, ticket), paused: () => this.paused(), closing: () => this.closing() })
+      this.autopilot = new Autopilot({ store, queue, poller, scheduler, health: board.claim('autopilot'),
+        lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing(),
+        requestPass: () => { passes.request() } })
       this.ready = this.initialize()
     } catch (error) {
       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
@@ -191,6 +221,68 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  /**
+   * The root a ticket's work runs under. An autopilot job's ticket works in its own repository's checkout, so two
+   * monitored repositories never share a directory; every other ticket keeps the configured execution root.
+   * @throws when the configured checkout is not a checkout of that repository, so work never lands in the wrong one.
+   */
+  private autopilotWorkspace(ticket: Ticket): string | undefined {
+    const job = this.autopilotQueue.all().find(item => item.ticketId === ticket.id)
+    if (!job) return undefined
+    const settings = this.store.settings().autopilot
+    const root = workspaceRoot(job.repository, settings, executionRoot(this.store.settings(), this.machine.stateDir))
+    if (!root) throw new Error(`The autopilot no longer watches ${job.repository}, so its work cannot run`)
+    return root
+  }
+  /**
+   * Proves that a job's work will run in its own repository's checkout, before anything is dispatched.
+   * @throws when the operator removed the repository, or its checkout belongs to another repository.
+   */
+  private async autopilotVerify(job: AutopilotJob): Promise<void> {
+    const settings = this.store.settings().autopilot
+    const root = workspaceRoot(job.repository, settings, executionRoot(this.store.settings(), this.machine.stateDir))
+    if (!root) throw new Error(`The autopilot no longer watches ${job.repository}`)
+    await verifyCheckout(this.commands.forRepository(job.repository), root, job.repository)
+  }
+  /**
+   * Builds the Trigger a queued job dispatches: the issue as it reads now, carrying the eligibility label the operator
+   * configured. Returns undefined when the issue closed or lost the label, so the job is skipped rather than started.
+   */
+  private async autopilotTrigger(job: AutopilotJob): Promise<Trigger | undefined> {
+    const settings = this.store.settings().autopilot
+    const commands = this.commands.forRepository(job.repository)
+    const issue = await readIssue(commands, job.issue)
+    if (issue.state !== 'open' || issue.pull_request != null) return undefined
+    const labels = (issue as { labels?: { name: string }[] }).labels?.map(label => label.name) ?? []
+    if (!labels.some(label => label.toLowerCase() === settings.eligibleLabel.toLowerCase())) return undefined
+    return autopilotTrigger(issue, settings.eligibleLabel, this.setup.deployment.github.login)
+  }
+  /**
+   * Delivers a finished job's work: pushes its branch, opens its pull request and merges it when the rules allow.
+   * The branch is the Ticket's short name under `agent/`, which is what binds the pull request back to the Ticket.
+   */
+  private async autopilotDeliver(job: AutopilotJob, ticket: Ticket): Promise<DeliveryResult> {
+    const commands = this.commands.forRepository(job.repository)
+    const branch = `agent/${ticket.execution?.name ?? branchOf(job)}`
+    const delivery = new Delivery({ commands, settings: () => this.store.settings().autopilot,
+      defaultBranch: () => defaultBranchOf(commands),
+      headSha: async (directory, ref) => (await commands.git(['rev-parse', ref], directory)).trim() || undefined })
+    return delivery.deliver({ repository: job.repository, issue: job.issue, branch, directory: ticket.execution?.directory ?? '',
+      summary: latestReport(ticket)?.summary ?? '' })
+  }
+  /**
+   * What a restart finds for a job: its Ticket, whether its branch exists in the checkout, whether the commit it recorded
+   * is still the branch's head, and whether a pull request for the branch merged. Recovery reads these before it resumes
+   * anything, so work that landed is never repeated.
+   */
+  private async autopilotFacts(job: AutopilotJob, ticket: Ticket | undefined): Promise<RecoveryFacts> {
+    const commands = this.commands.forRepository(job.repository)
+    const branch = job.branch ?? `agent/${ticket?.execution?.name ?? branchOf(job)}`
+    const head = await branchHead(commands, ticket?.execution?.directory ?? '', branch)
+    const pull = job.prNumber === undefined ? undefined : await pullMerged(commands, job.prNumber)
+    return { ticket: !!ticket, open: !!ticket && liveTicket(ticket), branch: !!head, commitLanded: !!job.commitSha && job.commitSha === head,
+      ...pull === undefined ? {} : { pull: { merged: pull } } }
+  }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
@@ -212,14 +304,18 @@ export class Runtime extends Service implements SourceHost {
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
     this.executor.resume()
+    // Existing autopilot jobs are not reconciled automatically while recovery is incomplete.
+    await this.autopilot.recover()
     this.passes.start()
     this.effects.start()
+    this.autopilot.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   private httpHost(): HttpHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+      autopilotQueue: this.autopilotQueue, autopilot: this.autopilot,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
@@ -235,6 +331,10 @@ export class Runtime extends Service implements SourceHost {
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
+      // The autopilot's loop stops with the lifetime; waiting for it keeps a poll from writing after the Store closes.
+      await this.autopilot.stop()
+      // Its job locks are files, which a crash would leave stale; releasing them lets the next process start at once.
+      await this.autopilotLocks.releaseAll()
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
       this.executor.dispose()

@@ -15,6 +15,15 @@ function deferred<T>() {
 }
 const model = { provider: 'worker-provider', model: 'worker-model' }
 
+it('refuses enabling the incomplete autopilot even from the panel', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const before = store.settings().autopilot
+  await expect(settings.save('autopilot', { ...before, enabled: true }, store.blockRevision('autopilot'), 'panel'))
+    .rejects.toThrow('Autopilot cannot be enabled')
+  expect(store.settings().autopilot.enabled).toBe(false)
+})
+
 it('refuses a save of a block that another save changed during its model or account check, and saves nothing of it', async () => {
   h = await startRuntime()
   const { settings, store } = h.runtime
