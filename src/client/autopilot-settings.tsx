@@ -53,6 +53,19 @@ export function AutopilotSettings() {
           </Field>
           <Toggle label={t('autopilotRequireAllowed')} hint={t('autopilotRequireAllowedHint')} checked={true}
             disabled={true} onChange={() => {}} />
+          <Toggle label={t('autopilotRouteWorkspace')} hint={t('autopilotRouteWorkspaceHint')} checked={value.routeToOpenWorkspace}
+            disabled={draft.busy} onChange={routeToOpenWorkspace => edit({ routeToOpenWorkspace })} />
+          <Field label={t('autopilotWorkspacePriority')} hint={t('autopilotWorkspacePriorityHint')}>
+            <textarea className="dt-textarea dt-mono" rows={3} spellCheck={false}
+              value={value.workspacePriority.join('\n')} placeholder={t('autopilotWorkspacePriorityEmpty')}
+              onChange={event => edit({ workspacePriority: event.target.value.split('\n').map(line => line.trim()).filter(Boolean) })} />
+          </Field>
+          <Field label={t('autopilotWorkspaceFallback')} hint={t('autopilotWorkspaceFallbackHint')}>
+            <select className="dt-select" value={value.workspaceFallback} disabled={draft.busy}
+              onChange={event => edit({ workspaceFallback: event.target.value as typeof value.workspaceFallback })}>
+              {(['checkout', 'wait'] as const).map(mode => <option key={mode} value={mode}>{t(`autopilotFallback.${mode}`)}</option>)}
+            </select>
+          </Field>
         </div>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('autopilotScheduling')}</h2>

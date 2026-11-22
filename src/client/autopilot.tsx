@@ -33,6 +33,12 @@ function JobLine({ job, onChanged }: { job: AutopilotJobView; onChanged: () => P
         {job.mergeSha && <span className="dt-mono">{t('autopilotMerged', { sha: job.mergeSha.slice(0, 7) })}</span>}
         <When at={job.updatedAt} />
       </div>
+      {job.route && <div className="dt-row-meta">
+        <span className="dt-mono">{job.route.path}</span>
+        <span>{t(job.route.kind === 'workspace' ? 'autopilotRoutedWorkspace' : 'autopilotRoutedCheckout')}</span>
+        <span className="dt-hint">{job.route.reason}</span>
+      </div>}
+      {job.sessionId && <div className="dt-row-meta"><span className="dt-mono">{job.sessionId}</span></div>}
       {job.error && <p className="dt-error">{job.error}</p>}
       <div className="dt-row-meta dt-row-buttons">
         {job.state === 'queued' && <Button variant="outline" size="sm" icon={<Icon name="pause" size={14} />}

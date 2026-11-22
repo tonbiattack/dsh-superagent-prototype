@@ -133,6 +133,19 @@ export const AutopilotConfigSchema = z.object({
   validationCommand: z.string().trim().max(LIMITS.autopilotValidationCommand).default(''),
   validationTimeoutSeconds: z.number().int().min(LIMITS.autopilotValidationTimeoutSeconds.min)
     .max(LIMITS.autopilotValidationTimeoutSeconds.max).default(1800),
+  /**
+   * Whether a job runs in an open DSH workspace of the same repository, which is where a person already works, instead of
+   * the configured checkout. Off keeps every job in the configured checkout.
+   */
+  routeToOpenWorkspace: z.boolean().default(true),
+  /** Workspace paths to prefer, in order, when several open workspaces of the repository are idle. */
+  workspacePriority: z.array(z.string().trim().refine(path => path === '' || path.startsWith('/'),
+    'An absolute path, or empty').default('')).max(LIMITS.autopilotRepositories).default([]),
+  /**
+   * What to do when no safe open workspace exists: run in the configured checkout, or wait for one. Waiting is the
+   * stricter choice, because it never runs a job somewhere the operator did not intend.
+   */
+  workspaceFallback: z.enum(['checkout', 'wait']).default('checkout'),
 }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),

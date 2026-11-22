@@ -325,6 +325,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/autopilot-recovery.ts` | `recover`: what a restart does with a job that was running, from its Ticket, its branch and its commit; a fact it could not establish changes nothing rather than being read as a negative one |
 | `src/app/autopilot-locks.ts` | `JobLocks`: one lock per repository and issue, kept inside the job's own checkout so processes with different state directories still exclude each other |
 | `src/app/autopilot-workspace.ts` | Where a job's work runs: its own repository's checkout, and the proof that the checkout's `origin` is that repository |
+| `src/app/autopilot-routing.ts` | `chooseWorkspace`: an open DSH workspace of the same repository when one is idle, otherwise the configured checkout or a wait, and the reason it chose |
 | `src/app/autopilot-validation.ts` | `validate`: the host runs the operator's validation command itself and reads its exit status, so a worker's report is never evidence |
 | `src/app/views/autopilot.ts` | The autopilot page: its settings, its health, each repository's active jobs, and every job with its state and result |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
@@ -434,6 +435,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/autopilot-delivery.spec.ts` | Merge-rule unit tests and delivery safety guard; unfinished delivery scenarios are skipped |
 | `tests/autopilot-recovery.spec.ts` | Recovery: what a restart does with a running job, including a fact it could not establish; the per-issue lock in a checkout, a worktree's shared lock, and the pause, resume, skip and retry a person asks for |
 | `tests/autopilot-workspace.spec.ts` | Each repository's own checkout, the remote URLs that name it, and the refusal of a checkout of another repository |
+| `tests/autopilot-routing.spec.ts` | Workspace routing: an idle workspace of the same repository, a busy one, another repository's, the operator's preference, and the deterministic choice |
 | `tests/autopilot-validation.spec.ts` | The host's own validation: a passing exit status, a failing one, a missing command, a missing checkout, and a command that cannot run |
 | `tests/autopilot-live.spec.ts` | The autopilot's GitHub reads against the real API, read-only, and only when `DSH_SUPERAGENT_LIVE_REPO` names a repository the agent's `gh` can read |
 | `tests/autopilot-runtime.spec.ts` | The autopilot end to end on a real Runtime: an Issue a listed account labelled becomes a Ticket, and a closed or unlabelled one does not |
