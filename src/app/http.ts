@@ -42,7 +42,7 @@ export interface HttpHost {
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   /** The autopilot's job queue, which the panel reads and commands. */
-  readonly autopilotQueue: Pick<AutopilotQueue, 'all' | 'pause' | 'resume' | 'skip' | 'retry'>
+  readonly autopilotQueue: Pick<AutopilotQueue, 'all' | 'named' | 'pause' | 'resume' | 'skip' | 'retry'>
   /** The autopilot service, whose tick the panel may ask for. */
   readonly autopilot: Pick<Autopilot, 'tick'>
   readonly health: Record<string, Health>
@@ -162,8 +162,11 @@ function jobCommand(runtime: HttpHost, params: { repository: string; issue: stri
   const issue = Number(params.issue)
   if (!Number.isInteger(issue) || issue <= 0) throw new RouteError(404, 'Job not found')
   const queue = runtime.autopilotQueue
+  // A person names the repository; the queue keys jobs by its immutable ID, so the name is resolved first.
+  const found = queue.named(params.repository, issue)
+  if (!found) throw new RouteError(404, 'Job not found')
   let job
-  try { job = queue[command](params.repository, issue) }
+  try { job = queue[command](found.repositoryId, issue) }
   catch (error) { throw new RouteError(400, error instanceof Error ? error.message : String(error)) }
   if (!job) throw new RouteError(404, 'Job not found')
   // A command that frees a job lets the next pass start it at once.

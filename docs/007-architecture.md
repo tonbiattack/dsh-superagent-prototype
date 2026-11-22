@@ -295,7 +295,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
-| `src/autopilot.ts` | The autopilot's rules, shared with the panel: the job record and its states, eligibility by label and allowed author, the queue's capacity and next job, the branch a job commits to, and the refusal to commit to the default branch |
+| `src/autopilot.ts` | The autopilot's rules, shared with the panel: the job record and its states, eligibility by label and allowed author, the queue's capacity and next job, the branch a job commits to, and the refusal to commit to the default branch. A job is keyed by GitHub's immutable repository ID and the issue number, so a rename keeps it |
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
 | `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take |
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
@@ -318,7 +318,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/autopilot.ts` | The autopilot service: the polling loop, one tick that polls then schedules, and the `autopilot` health entry |
-| `src/app/autopilot-queue.ts` | `AutopilotQueue`: the durable job records, one per repository and issue, and the only writer of them |
+| `src/app/autopilot-queue.ts` | `AutopilotQueue`: the durable job records, one per repository and issue, keyed by the repository's immutable ID so a rename keeps them, and the only writer of them |
 | `src/app/autopilot-poller.ts` | `AutopilotPoller`: reads each watched repository's open issues through the agent's `gh`, queues the eligible ones, and skips a queued job whose issue closed or lost its label |
 | `src/app/autopilot-scheduler.ts` | Unfinished scheduler prototype; dispatch and delivery remain disabled pending safety verification |
 | `src/app/autopilot-delivery.ts` | Unfinished `Delivery` prototype; external writes are disabled pending validation, identity, and branch-protection work |
