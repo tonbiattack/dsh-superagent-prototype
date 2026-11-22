@@ -157,23 +157,6 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
 }
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
-/**
- * The basis of an issue the autopilot opted in by label, or undefined when the Trigger is not one.
- * The Source records the label it matched in the Trigger's `meta.autopilot`, so the gate needs no GitHub call: an issue
- * carries the label only while the poller saw it, and a later poll that finds it gone stops the job.
- */
-function autopilotBasis(trigger: Trigger, settings: Settings, allowed: z.infer<typeof AllowedSchema> | undefined):
-  { via: 'autopilot'; label: string; issue: number } | undefined {
-  const label = trigger.meta.autopilot
-  if (typeof label !== 'string' || !label) return undefined
-  if (!settings.autopilot.enabled) return undefined
-  // The label is the addressing, so the author must be on the list; the poller checks this too, and the gate is the authority.
-  if (settings.autopilot.requireAllowedActor && !allowed) return undefined
-  const issue = Number(trigger.meta.number)
-  if (!Number.isInteger(issue) || issue <= 0) return undefined
-  return { via: 'autopilot', label, issue }
-}
-
 /** Check whether a thread has tickets of its own (excluding context-only subscriptions). */
 const participating = (thread: Thread, tickets: Ticket[]): boolean =>
   [...thread.subscriptions, ...tickets.map(ticket => ticket.id)].some(id => !thread.context?.includes(id))
@@ -241,9 +224,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const scope = listened(sources, trigger.source, trigger.meta)
       const row = scope.listened ? scope.row : undefined
       const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row }, ...allowed ? { sender: senderName(allowed) } : {} }
-      // An issue an operator opted in by label is an explicit request from a sender on the list, without the agent being addressed.
-      const opted = autopilotBasis(trigger, settings, allowed)
-      if (opted) return { admissible: true, strength: 'explicit', basis: { ...recorded, ...opted } }
+      // A source-provided metadata flag is not proof of an operator-applied label.
+      // Do not create autopilot mandates until trusted issue identity and label evidence are bound at intake.
       if (allowed && trigger.addressed) return { admissible: true, strength: 'explicit', basis: { ...recorded, via: 'addressed', addressed: trigger.addressed } }
       const cell = admissionCell(!!allowed, !!trigger.addressed)!
       // Unaddressed messages only use the admission table when the Source observes all messages in that scope.
@@ -269,8 +251,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const rulesOn = (rules: string[] | undefined) => (rules ?? []).every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id))
       // Explicit follow-ups remain valid; inferred follow-ups require auto mode and enabled matched rules.
       if (basis.via === 'followup') return mandate.strength === 'explicit' || (mode === 'auto' && rulesOn(basis.rules))
-      // An autopilot Mandate holds while the autopilot is on and its author may still originate work.
-      if (basis.via === 'autopilot') return settings.autopilot.enabled && (!settings.autopilot.requireAllowedActor || !!allowedSender(settings, mandate.actor))
+      // Legacy prototype autopilot mandates cannot be revalidated without trusted label evidence.
+      if (basis.via === 'autopilot') return false
       // A bot's candidate holds only while the bot remains on its Source's bot list and passes the observation checks below.
       if (basis.via === 'bot' && !listedBot(settings, mandate.actor)) return false
       // An admission-table Mandate holds while the sender's current cell still grants at least the original strength.

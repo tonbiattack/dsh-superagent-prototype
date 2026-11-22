@@ -26,8 +26,8 @@ describe('autopilot eligibility', () => {
   it('matches the label and the author without regard to case, as GitHub does', () => {
     expect(eligible(issue({ labels: ['AutoPilot'], author: 'Alice' }), settings(), ['ALICE'])).toBe(true)
   })
-  it('takes up any author when the operator turns the allowed-actor check off', () => {
-    expect(eligible(issue({ author: 'stranger' }), settings({ requireAllowedActor: false }), [])).toBe(true)
+  it('never accepts an unlisted author, even if an old setting disables the check', () => {
+    expect(eligible(issue({ author: 'stranger' }), settings({ requireAllowedActor: false }), [])).toBe(false)
   })
   it('honours a configured label rather than the default', () => {
     expect(eligible(issue({ labels: ['ai'] }), settings({ eligibleLabel: 'ai' }), ['alice'])).toBe(true)

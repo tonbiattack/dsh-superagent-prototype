@@ -23,8 +23,7 @@ const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands])
 /** Autopilot settings that decide where work runs and what delivery may do there, which only the panel may change. */
-const autopilotScope = ({ autopilot }: SettingsValue) => JSON.stringify([autopilot.repositories, autopilot.createPullRequest, autopilot.autoPush,
-  autopilot.autoMerge, autopilot.mergeMethod, autopilot.respectBranchProtection, autopilot.disallowDefaultBranchCommit])
+const autopilotScope = ({ autopilot }: SettingsValue) => JSON.stringify(autopilot)
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -50,9 +49,12 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'autopilot' | 'source', Bl
   autopilot: {
     parse: value => AutopilotConfigSchema.parse(value),
     merge: (settings, value) => ({ ...settings, autopilot: value as SettingsValue['autopilot'] }),
-    // The repositories and the delivery switches decide where work runs and what it may do there, so only the panel sets them.
+    // All autopilot settings affect authorization or execution and are panel-only.
     guard: (current, candidate, origin) => {
       if (origin !== 'panel' && autopilotScope(current) !== autopilotScope(candidate)) throw new UserError('panelOnlyAutopilot')
+      if (candidate.autopilot.enabled && !current.autopilot.enabled) {
+        throw new UserError('autopilotUnavailable')
+      }
     },
   },
   source: {

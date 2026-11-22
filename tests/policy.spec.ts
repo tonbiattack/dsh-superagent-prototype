@@ -90,9 +90,8 @@ describe('gate', () => {
 describe('autopilot gate', () => {
   const opted = (login = 'Alice', patch: Record<string, unknown> = {}): Trigger => ({ ...github(login), meta: { number: 7, isPr: false, autopilot: 'autopilot' }, ...patch })
   const on = (patch: Record<string, unknown> = {}) => setup(SettingsSchema.parse({ ...base, autopilot: { enabled: true, ...patch } }))
-  it('admits an issue an operator opted in by label as an explicit request from a listed author, without the agent being addressed', () => {
-    expect(on().policy.gate(opted(), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
-      basis: { via: 'autopilot', label: 'autopilot', issue: 7, source: 'github', sender: 'Alice' } })
+  it('does not trust a source metadata flag as proof an operator applied a label', () => {
+    expect(on().policy.gate(opted(), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
   })
   it('admits nothing while the autopilot is off, so the label alone starts no work', () => {
     expect(policy.gate(opted(), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
@@ -100,19 +99,19 @@ describe('autopilot gate', () => {
   it('admits nothing for an author who may not originate work', () => {
     expect(on().policy.gate(opted('stranger'), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
   })
-  it('admits an unlisted author when the operator turns the allowed-actor check off', () => {
-    expect(on({ requireAllowedActor: false }).policy.gate(opted('stranger'), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit' })
+  it('does not admit an unlisted author when an old setting disables the check', () => {
+    expect(on({ requireAllowedActor: false }).policy.gate(opted('stranger'), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
   })
   it('leaves an issue without the label to the ordinary rules', () => {
     const plain: Trigger = { ...github('Alice'), meta: { number: 7, isPr: false } }
     expect(on().policy.gate(plain, thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
   })
-  it('keeps an autopilot Mandate while the autopilot is on and its author may still originate work', () => {
+  it('does not revalidate an autopilot mandate without trusted label evidence', () => {
     const mandate = { strength: 'explicit' as const, policyVersion: 'v', actor: { source: 'github', id: 'Alice' }, scope: 'fix',
       basis: { via: 'autopilot' as const, label: 'autopilot', issue: 7, source: 'github' } }
-    expect(on().policy.revalidate(mandate)).toBe(true)
+    expect(on().policy.revalidate(mandate)).toBe(false)
     expect(policy.revalidate(mandate)).toBe(false)
-    expect(on({ requireAllowedActor: false }).policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(true)
+    expect(on({ requireAllowedActor: false }).policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(false)
     expect(on().policy.revalidate({ ...mandate, actor: { source: 'github', id: 'stranger' } })).toBe(false)
   })
 })

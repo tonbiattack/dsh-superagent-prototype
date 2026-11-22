@@ -1,9 +1,7 @@
 /**
- * The autopilot's delivery: push the issue branch, open a pull request, wait for what the repository requires, and merge
- * only when every requirement holds.
- *
- * The rules are pure functions so they can be tested without GitHub, and the calls are thin. Nothing here bypasses branch
- * protection: a missing check, an unmet approval, a conflict or a failed push leaves the pull request open and says why.
+ * Unfinished autopilot delivery prototype. External writes are disabled: the existing merge and
+ * branch-protection checks do not establish all required safety conditions. Do not enable delivery
+ * until validation, repository identity, PR reconciliation, and protection rules are verified.
  */
 import { z } from 'zod'
 import { CliError, type Commands } from '../infra/commands.ts'
@@ -30,6 +28,8 @@ export interface MergeFacts {
   /** Whether the repository requires an approving review, and how many approvals it has. */
   requiredApprovals?: number
   approvals?: number
+  /** Checks the repository requires that GitHub reported no run for, which have therefore not passed. */
+  missingChecks?: readonly string[]
 }
 /** Why a pull request may not merge, or that it may. */
 export type MergeVerdict = { merge: true } | { merge: false; reason: string }
@@ -45,8 +45,10 @@ export function mergeVerdict(facts: MergeFacts, settings: AutopilotSettings): Me
   if (failed.length) return { merge: false, reason: `required checks failed: ${failed.join(', ')}` }
   const running = facts.checks.filter(check => check.running).map(check => check.name)
   if (running.length) return { merge: false, reason: `required checks are still running: ${running.join(', ')}` }
+  // A required check GitHub reports no run for has not passed; it is never treated as absent from the requirements.
+  if (facts.missingChecks?.length) return { merge: false, reason: `required checks have not run: ${facts.missingChecks.join(', ')}` }
   // An approval the repository requires is never assumed: without the count, delivery waits rather than guesses.
-  if (settings.respectBranchProtection && facts.requiredApprovals) {
+  if (facts.requiredApprovals) {
     const have = facts.approvals ?? 0
     if (have < facts.requiredApprovals) return { merge: false, reason: `the repository requires ${facts.requiredApprovals} approving review(s); it has ${have}` }
   }
@@ -90,6 +92,7 @@ const PullListSchema = z.array(PullSchema)
  */
 export class Delivery {
   constructor(private readonly host: DeliveryHost) {}
+  private unsafeToDeliver(): boolean { return true }
 
   /**
    * Delivers `branch` from `directory` for `issue`.
@@ -97,6 +100,10 @@ export class Delivery {
    * @throws when the branch is the default branch, or a push or read fails; the caller records the reason on the job.
    */
   async deliver(input: { repository: string; issue: number; branch: string; directory: string; summary: string }): Promise<DeliveryResult> {
+    // The worker's report is not evidence that the host ran the configured tests or that this
+    // checkout belongs to the intended repository. Do not perform any external writes until
+    // those checks and branch-protection reconciliation are implemented and verified.
+    if (this.unsafeToDeliver()) throw new Error('Automatic delivery is disabled: host-verified tests and repository isolation are not implemented')
     const settings = this.host.settings()
     const defaultBranch = await this.host.defaultBranch()
     if (settings.disallowDefaultBranchCommit && !branchAllowed(input.branch, defaultBranch)) {
@@ -146,11 +153,19 @@ export class Delivery {
   private async facts(pull: DeliveryPull): Promise<MergeFacts> {
     const commands = this.host.commands
     const checks = await this.checks(pull.head.sha)
-    const reviews = await commands.api(z.array(z.looseObject({ state: z.string() })), `pulls/${pull.number}/reviews?per_page=100`)
-    const approvals = new Set(reviews.filter(review => review.state === 'APPROVED').map(review => review.state)).size
+    const reviews = await commands.api(z.array(z.looseObject({ state: z.string(), user: z.looseObject({ login: z.string() }).nullish() })),
+      `pulls/${pull.number}/reviews?per_page=100`)
+    // Count each reviewer's latest state once: a reviewer who approved and later requested changes has not approved.
+    const latest = new Map<string, string>()
+    for (const review of reviews) if (review.user?.login) latest.set(review.user.login.toLowerCase(), review.state)
+    const approvals = [...latest.values()].filter(state => state === 'APPROVED').length
     const protection = await this.protection(pull.base.ref)
+    // A required context that GitHub reports no run for has not passed, so it is named as missing rather than assumed.
+    const reported = new Set(checks.map(check => check.name))
+    const missing = (protection.requiredChecks ?? []).filter(name => !reported.has(name))
     return { open: pull.state === 'open' && !pull.merged, conflicting: pull.mergeable === false || pull.mergeable_state === 'dirty',
-      checks, ...protection.requiredApprovals ? { requiredApprovals: protection.requiredApprovals } : {}, approvals }
+      checks, ...protection.requiredApprovals ? { requiredApprovals: protection.requiredApprovals } : {}, approvals,
+      ...missing.length ? { missingChecks: missing } : {} }
   }
   /** The pull request's checks, reduced to whether each failed or still runs; a check that passed is neither. */
   private async checks(head: string): Promise<CheckState[]> {
@@ -165,12 +180,17 @@ export class Delivery {
       ...[...latest].map(([name, state]) => ({ name, failed: failing.has(state), running: state === 'pending' }))]
   }
   /** What the base branch's protection requires; a repository without protection requires nothing. */
-  private async protection(branch: string): Promise<{ requiredApprovals?: number }> {
+  private async protection(branch: string): Promise<{ requiredApprovals?: number; requiredChecks?: string[] }> {
     try {
-      const read = await this.host.commands.api(z.looseObject({ required_pull_request_reviews: z.looseObject({
-        required_approving_review_count: z.number().int().nullish() }).nullish() }), `branches/${encodeURIComponent(branch)}/protection`)
+      const read = await this.host.commands.api(z.looseObject({
+        required_pull_request_reviews: z.looseObject({ required_approving_review_count: z.number().int().nullish() }).nullish(),
+        required_status_checks: z.looseObject({ contexts: z.array(z.string()).nullish(),
+          checks: z.array(z.looseObject({ context: z.string() })).nullish() }).nullish(),
+      }), `branches/${encodeURIComponent(branch)}/protection`)
       const count = read.required_pull_request_reviews?.required_approving_review_count
-      return count ? { requiredApprovals: count } : {}
+      // GitHub reports required contexts as strings, or as objects on newer API versions; both name the same checks.
+      const contexts = read.required_status_checks?.contexts ?? read.required_status_checks?.checks?.map(check => check.context) ?? []
+      return { ...count ? { requiredApprovals: count } : {}, ...contexts.length ? { requiredChecks: contexts } : {} }
     } catch (error) {
       // 404 means the branch is unprotected, which requires nothing; any other failure must not be read as permission.
       if (error instanceof CliError && error.code === 404) return {}
@@ -189,4 +209,13 @@ export class Delivery {
     const read = await this.host.commands.api(z.looseObject({ merge_commit_sha: z.string().nullish() }), `pulls/${number}`)
     return read.merge_commit_sha ?? undefined
   }
+}
+/** Whether a pull request merged, which recovery reads before it resumes a job. */
+export async function pullMerged(commands: Commands, number: number): Promise<boolean | undefined> {
+  return commands.api(z.looseObject({ merged: z.boolean().nullish() }), `pulls/${number}`).then(read => !!read.merged, () => undefined)
+}
+/** The commit a branch is at in a checkout, or undefined when the branch does not exist there. */
+export async function branchHead(commands: Commands, directory: string, branch: string): Promise<string | undefined> {
+  if (!directory) return undefined
+  return commands.git(['rev-parse', '--verify', `refs/heads/${branch}`], directory).then(text => text.trim() || undefined, () => undefined)
 }

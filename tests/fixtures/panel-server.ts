@@ -14,6 +14,8 @@ import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, Source
   TriggerRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
+import { autopilotView } from '../../src/app/views/autopilot.ts'
+import type { AutopilotJob } from '../../src/autopilot.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
@@ -108,6 +110,9 @@ export interface PanelServer {
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
+  /** The autopilot's jobs, which the panel reads and commands. */
+  autopilotJobs: AutopilotJob[]
+  autopilotHealth?: Health
 }
 export let server: PanelServer
 
@@ -249,6 +254,7 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    autopilotJobs: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -280,6 +286,15 @@ function initial(): PanelServer {
 /** A refusal response carrying the host's HTTP status code and JSON error body. Returned by route handlers when a request is rejected. */
 class Refusal { constructor(readonly status: 400 | 404 | 409 | 500, readonly body: Record<string, unknown>) {} }
 const refuse = (status: Refusal['status'], error: string, more: Record<string, unknown> = {}) => new Refusal(status, { error, ...more })
+/** Runs a person's command on one autopilot job, as the host does, answering its new state. */
+function jobCommand(params: { repository: string; issue: string }, command: 'pause' | 'resume' | 'skip' | 'retry') {
+  const issue = Number(params.issue)
+  const job = server.autopilotJobs.find(item => item.repository === params.repository && item.issue === issue)
+  if (!job) return refuse(404, 'Job not found')
+  const next = command === 'pause' ? 'paused' : command === 'resume' || command === 'retry' ? 'queued' : 'skipped'
+  job.state = next
+  return { state: next }
+}
 type Query<K extends keyof Api> = Api[K] extends { query?: infer Q } ? keyof NonNullable<Q> & string : never
 type Body<K extends keyof Api> = Api[K] extends { body: infer B } ? B : undefined
 interface Request<K extends keyof Api> { params: RouteParams<K>; query: Partial<Record<Query<K>, string>>; body: Body<K> }
@@ -344,6 +359,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
     return { paused: body.paused }
   } },
+  'GET autopilot': { answer: () => autopilotView({ all: () => server.autopilotJobs }, server.settings.autopilot, server.autopilotHealth) },
+  'POST autopilot/:repository/:issue/pause': { answer: ({ params }) => jobCommand(params, 'pause') },
+  'POST autopilot/:repository/:issue/resume': { answer: ({ params }) => jobCommand(params, 'resume') },
+  'POST autopilot/:repository/:issue/skip': { answer: ({ params }) => jobCommand(params, 'skip') },
+  'POST autopilot/:repository/:issue/retry': { answer: ({ params }) => jobCommand(params, 'retry') },
+  'POST autopilot/poll': { answer: () => ({ polls: [], failures: [] }) },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
     if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')

@@ -11,8 +11,8 @@ export const TERMINAL: readonly AutopilotState[] = ['done', 'failed', 'skipped']
 /** States that hold a worker slot. */
 export const ACTIVE: readonly AutopilotState[] = ['queued', 'running']
 /**
- * One issue's work, keyed by repository and issue number so repeated polls and restarts find it again.
- * `repositoryId` is GitHub's immutable repository ID, which survives a rename; `repository` is the name to call.
+ * One issue's work, currently keyed by repository name and issue number. This is not rename-safe;
+ * immutable repository and issue IDs must become the key before dispatch is enabled.
  */
 export interface AutopilotJob {
   repository: string
@@ -40,7 +40,7 @@ export interface AutopilotJob {
 export interface AutopilotRepository { fullName: string; checkout: string }
 /** The autopilot settings a job is scheduled under. */
 export type AutopilotSettings = Settings['autopilot']
-/** The key of a job: repository and issue number, which no rename changes while `repositoryId` holds. */
+/** Prototype key: repository name and issue number. Renaming a repository changes this key. */
 export const jobKey = (repository: string, issue: number): string => `${repository.toLowerCase()}#${issue}`
 /** The branch a job commits to; the last path segment is the Ticket's short name, which binds a pull request to it. */
 export const jobBranch = (issue: number): string => `agent/issue-${issue}`
@@ -93,13 +93,12 @@ export interface EligibleIssue {
  */
 export function eligible(issue: EligibleIssue, settings: AutopilotSettings, allowed: readonly string[]): boolean {
   if (!issue.labels.some(label => label.toLowerCase() === settings.eligibleLabel.toLowerCase())) return false
-  if (!settings.requireAllowedActor) return true
   return allowed.some(id => id.toLowerCase() === issue.author.toLowerCase())
 }
 /** Why an issue was not taken up, for the panel and the log; undefined when it is eligible. */
 export function ineligibleReason(issue: EligibleIssue, settings: AutopilotSettings, allowed: readonly string[]): string | undefined {
   if (!issue.labels.some(label => label.toLowerCase() === settings.eligibleLabel.toLowerCase())) return `no ${settings.eligibleLabel} label`
-  if (settings.requireAllowedActor && !allowed.some(id => id.toLowerCase() === issue.author.toLowerCase())) {
+  if (!allowed.some(id => id.toLowerCase() === issue.author.toLowerCase())) {
     return `${issue.author} may not originate work`
   }
   return undefined
