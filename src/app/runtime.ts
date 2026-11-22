@@ -59,6 +59,8 @@ import { chooseWorkspace, type RouteDecision, type WorkspaceCandidate } from './
 import { chooseSession, repositorySessionId, type SessionCandidate } from './autopilot-session.ts'
 import { SessionLocks } from './autopilot-session-locks.ts'
 import { ensureWorktree, worktreeBranch, worktreePath } from './autopilot-worktree.ts'
+import { addUsage, noUsage, type JobUsage } from './autopilot-usage.ts'
+import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { validate } from './autopilot-validation.ts'
 import { autopilotTrigger } from '../sources/github-trigger.ts'
 import { readIssue } from '../sources/github-read.ts'
@@ -312,6 +314,23 @@ export class Runtime extends Service implements SourceHost {
     return choice.kind === 'reuse' ? choice.id : undefined
   }
   /**
+   * What a job's work cost, read from its session's own model calls.
+   *
+   * The figures are the provider's, so a field it omitted stays absent rather than becoming a confident zero. A session
+   * that cannot be read yields no usage at all, which the panel shows as unavailable.
+   */
+  private autopilotUsage(job: AutopilotJob): JobUsage | undefined {
+    if (job.sessionId === undefined) return undefined
+    const agent = this.ctx.agents.get(job.sessionId as SessionId)
+    if (!agent) return undefined
+    let total = noUsage()
+    for (const event of agent.session.snapshotEvents()) {
+      if (event.type !== 'assistant/message') continue
+      total = addUsage(total, (event.data as { usage?: TokenUsage }).usage)
+    }
+    return total.calls === 0 ? undefined : total
+  }
+  /**
    * The checkout a job's work runs in, which is also where its lock lives so every process shares it.
    * @throws when the operator removed the repository, so its jobs cannot run anywhere.
    */
@@ -405,6 +424,7 @@ export class Runtime extends Service implements SourceHost {
     const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
       autopilotQueue: this.autopilotQueue, autopilot: this.autopilot,
+      autopilotUsage: job => this.autopilotUsage(job),
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),

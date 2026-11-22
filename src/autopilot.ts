@@ -36,6 +36,9 @@ export interface AutopilotJob {
   route?: { kind: 'workspace' | 'checkout'; path: string; title?: string; reason: string }
   /** The DSH session the job's work runs in, once it has one. */
   sessionId?: string
+  /** What the job's work cost, as far as the provider reported it; a figure it omitted is absent, never zero. */
+  usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; calls: number
+    unreported: number }
   /** How many times dispatch was attempted, which bounds automatic retries. */
   attempts: number
   createdAt: string
