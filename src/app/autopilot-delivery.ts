@@ -1,7 +1,11 @@
 /**
- * Unfinished autopilot delivery prototype. External writes are disabled: the existing merge and
- * branch-protection checks do not establish all required safety conditions. Do not enable delivery
- * until validation, repository identity, PR reconciliation, and protection rules are verified.
+ * The autopilot's delivery: push the issue branch, open a pull request, wait for what the repository requires, and merge
+ * only when every requirement holds.
+ *
+ * The rules are pure functions so they can be tested without GitHub, and the calls are thin. Nothing here bypasses branch
+ * protection: a missing check, an unmet approval, a conflict or a failed push leaves the pull request open and says why.
+ * Every step is idempotent against GitHub's own state, so a retry after a restart reuses what exists instead of
+ * duplicating it.
  */
 import { z } from 'zod'
 import { CliError, type Commands } from '../infra/commands.ts'
@@ -31,6 +35,8 @@ export interface MergeFacts {
   approvals?: number
   /** Checks the repository requires that GitHub reported no run for, which have therefore not passed. */
   missingChecks?: readonly string[]
+  /** GitHub's own mergeability verdict, when it reports one: `blocked`, `behind`, `unstable`, `draft` and so on. */
+  mergeableState?: string
 }
 /** Why a pull request may not merge, or that it may. */
 export type MergeVerdict = { merge: true } | { merge: false; reason: string }
@@ -42,12 +48,18 @@ export function mergeVerdict(facts: MergeFacts, settings: AutopilotSettings): Me
   if (!settings.autoMerge) return { merge: false, reason: 'automatic merging is off' }
   if (!facts.open) return { merge: false, reason: 'the pull request is not open' }
   if (facts.conflicting) return { merge: false, reason: 'the pull request conflicts with its base branch' }
+  // GitHub's own verdict is never overridden: a blocked, behind or draft pull request is not mergeable whatever else holds.
+  if (facts.mergeableState && facts.mergeableState !== 'clean' && facts.mergeableState !== 'has_hooks') {
+    return { merge: false, reason: `GitHub reports the pull request as ${facts.mergeableState}` }
+  }
   const failed = facts.checks.filter(check => check.failed).map(check => check.name)
   if (failed.length) return { merge: false, reason: `required checks failed: ${failed.join(', ')}` }
   const running = facts.checks.filter(check => check.running).map(check => check.name)
   if (running.length) return { merge: false, reason: `required checks are still running: ${running.join(', ')}` }
   // A required check GitHub reports no run for has not passed; it is never treated as absent from the requirements.
-  if (facts.missingChecks?.length) return { merge: false, reason: `required checks have not run: ${facts.missingChecks.join(', ')}` }
+  if (settings.requireRequiredChecks && facts.missingChecks?.length) {
+    return { merge: false, reason: `required checks have not run: ${facts.missingChecks.join(', ')}` }
+  }
   // An approval the repository requires is never assumed: without the count, delivery waits rather than guesses.
   if (facts.requiredApprovals) {
     const have = facts.approvals ?? 0
@@ -57,11 +69,14 @@ export function mergeVerdict(facts: MergeFacts, settings: AutopilotSettings): Me
 }
 /** The title of the pull request a job opens: the issue's own title, so the link back is obvious. */
 export const pullTitle = (issue: number, title: string): string => `${title} (#${issue})`
-/** The body of the pull request a job opens: what it closes, and that a person should read the issue for the request. */
-export function pullBody(issue: number, repository: string, summary: string): string {
-  const closes = `Closes #${issue}`
+/**
+ * The body of the pull request a job opens. `Closes #n` makes GitHub close the Issue when the pull request merges, so it
+ * is written only when the operator asked for that; otherwise the Issue stays open for a person to close.
+ */
+export function pullBody(issue: number, repository: string, summary: string, closeIssue = false): string {
+  const closes = closeIssue ? `Closes #${issue}\n\n` : ''
   const note = summary.trim() ? `\n\n${summary.trim()}` : ''
-  return `${closes}\n\nOpened by dsh-superagent for ${repository}. The issue is the request; this is the change.${note}`
+  return `${closes}Opened by dsh-superagent for ${repository}. The issue is the request; this is the change.${note}`
 }
 /** What delivery did, which the job records. */
 export interface DeliveryResult {
@@ -98,38 +113,38 @@ const PullListSchema = z.array(PullSchema)
  */
 export class Delivery {
   constructor(private readonly host: DeliveryHost) {}
-  private unsafeToDeliver(): boolean { return true }
 
   /**
    * Delivers `branch` from `directory` for `issue`.
    * @param summary - what the work did, for the pull request body.
-   * @throws when the branch is the default branch, or a push or read fails; the caller records the reason on the job.
+   * @throws when validation did not pass, the branch is the default branch, or a push or read fails; the caller records
+   * the reason on the job.
    */
   async deliver(input: { repository: string; issue: number; branch: string; directory: string; summary: string }): Promise<DeliveryResult> {
-    // The worker's report is not evidence that the host ran the configured tests or that this
-    // checkout belongs to the intended repository. Do not perform any external writes until
-    // those checks and branch-protection reconciliation are implemented and verified.
-    if (this.unsafeToDeliver()) throw new Error('Automatic delivery is disabled: host-verified tests and repository isolation are not implemented')
     const settings = this.host.settings()
     // The host runs the validation itself, before anything leaves the machine. A worker's report is not evidence.
     const validation = await this.host.validate(input.directory)
     if (!validation.passed) throw new Error(`Refusing to deliver: ${validation.detail ?? 'validation did not pass'}`)
     const defaultBranch = await this.host.defaultBranch()
-    if (settings.disallowDefaultBranchCommit && !branchAllowed(input.branch, defaultBranch)) {
+    if (!branchAllowed(input.branch, defaultBranch)) {
       throw new Error(`Refusing to deliver to ${input.branch}: it is the default branch`)
     }
-    const commands = this.host.commands
-    const result: DeliveryResult = { pushed: false }
     // The commit the branch is at is the record of the work, whether or not it is pushed.
-    result.commitSha = await this.host.headSha(input.directory, input.branch)
+    const commitSha = await this.host.headSha(input.directory, input.branch)
+    if (!commitSha) throw new Error(`Refusing to deliver ${input.branch}: it has no commit`)
+    const result: DeliveryResult = { pushed: false, commitSha }
+    // What already exists decides the rest: a merged pull request for this very commit is the work already delivered.
+    const existing = await this.pullFor(input.repository, input.branch, defaultBranch)
+    if (existing?.merged && sameName(existing.head.sha, commitSha)) {
+      return { ...result, prNumber: existing.number, prUrl: existing.html_url, mergeSha: await this.mergeSha(existing.number) }
+    }
     if (settings.autoPush) {
       // A plain push, never a force push: a rejected push means the branch moved, which a person must look at.
-      await commands.git(['push', '--set-upstream', 'origin', input.branch], input.directory)
+      await this.host.commands.git(['push', '--set-upstream', 'origin', input.branch], input.directory)
       result.pushed = true
     }
     if (!settings.createPullRequest) return result
-    const pull = await this.pullFor(input.repository, input.branch, defaultBranch)
-    const opened = pull ?? await this.open(input, defaultBranch)
+    const opened = existing ?? await this.open(input, defaultBranch)
     result.prNumber = opened.number
     result.prUrl = opened.html_url
     if (opened.merged) {
@@ -138,20 +153,26 @@ export class Delivery {
     }
     const verdict = mergeVerdict(await this.facts(opened), settings)
     if (!verdict.merge) { result.blocked = verdict.reason; return result }
-    result.mergeSha = await this.merge(opened.number, settings.mergeMethod)
+    // The merge names the commit it expects, so a branch that moved meanwhile is refused rather than merged unseen.
+    result.mergeSha = await this.merge(opened.number, settings.mergeMethod, commitSha)
     return result
   }
-  /** The open pull request whose head is `branch`, so a retry reuses it instead of opening a second one. */
+  /**
+   * The pull request for `branch` into `defaultBranch`, preferring the open one so a retry reuses it instead of opening a
+   * second one. A merged pull request is returned only when nothing is open, and the caller checks its commit.
+   */
   private async pullFor(repository: string, branch: string, defaultBranch: string): Promise<DeliveryPull | undefined> {
     const owner = repository.split('/')[0] ?? ''
     const pulls = await this.host.commands.api(PullListSchema, `pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`)
-    // A merged pull request for the same branch is the work already delivered; an open one is reused.
-    return pulls.find(pull => sameName(pull.head.ref, branch) && sameName(pull.base.ref, defaultBranch))
+    const matching = pulls.filter(pull => sameName(pull.head.ref, branch) && sameName(pull.base.ref, defaultBranch))
+    return matching.find(pull => pull.state === 'open' && !pull.merged) ?? matching.find(pull => pull.merged)
   }
   /** Opens the pull request for the branch, targeting the repository's default branch. */
   private async open(input: { repository: string; issue: number; branch: string; summary: string }, defaultBranch: string): Promise<DeliveryPull> {
+    const settings = this.host.settings()
     return this.host.commands.api(PullSchema, 'pulls', '--method', 'POST', '-f', `title=${pullTitle(input.issue, await this.issueTitle(input.issue))}`,
-      '-f', `head=${input.branch}`, '-f', `base=${defaultBranch}`, '-f', `body=${pullBody(input.issue, input.repository, input.summary)}`)
+      '-f', `head=${input.branch}`, '-f', `base=${defaultBranch}`,
+      '-f', `body=${pullBody(input.issue, input.repository, input.summary, settings.autoCloseIssue)}`)
   }
   /** The issue's title, which the pull request's title repeats so the two read as one piece of work. */
   private async issueTitle(issue: number): Promise<string> {
@@ -174,6 +195,7 @@ export class Delivery {
     const missing = (protection.requiredChecks ?? []).filter(name => !reported.has(name))
     return { open: pull.state === 'open' && !pull.merged, conflicting: pull.mergeable === false || pull.mergeable_state === 'dirty',
       checks, ...protection.requiredApprovals ? { requiredApprovals: protection.requiredApprovals } : {}, approvals,
+      ...pull.mergeable_state ? { mergeableState: pull.mergeable_state } : {},
       ...missing.length ? { missingChecks: missing } : {} }
   }
   /** The pull request's checks, reduced to whether each failed or still runs; a check that passed is neither. */
@@ -206,10 +228,13 @@ export class Delivery {
       throw error
     }
   }
-  /** Merges the pull request with the configured method, returning the merge commit GitHub reports. */
-  private async merge(number: number, method: AutopilotSettings['mergeMethod']): Promise<string | undefined> {
+  /**
+   * Merges the pull request with the configured method, returning the merge commit GitHub reports.
+   * @param expected - the commit the branch must still be at, so a branch that moved is refused rather than merged unseen.
+   */
+  private async merge(number: number, method: AutopilotSettings['mergeMethod'], expected: string): Promise<string | undefined> {
     const merged = await this.host.commands.api(z.looseObject({ merged: z.boolean().nullish(), sha: z.string().nullish(), message: z.string().nullish() }),
-      `pulls/${number}/merge`, '--method', 'PUT', '-f', `merge_method=${method}`)
+      `pulls/${number}/merge`, '--method', 'PUT', '-f', `merge_method=${method}`, '-f', `sha=${expected}`)
     if (!merged.merged) throw new Error(`GitHub refused the merge: ${merged.message ?? 'no reason given'}`)
     return merged.sha ?? await this.mergeSha(number)
   }

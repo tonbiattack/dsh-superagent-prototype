@@ -53,11 +53,13 @@ describe('pull request text', () => {
   it('names the issue in the title, so the two read as one piece of work', () => {
     expect(pullTitle(12, 'Fix the parser')).toBe('Fix the parser (#12)')
   })
-  it('closes the issue from the body, and says who opened it', () => {
-    const body = pullBody(12, 'owner/one', 'Reworked the parser.')
+  it('closes the issue from the body only when the operator asked for it, and says who opened it', () => {
+    const body = pullBody(12, 'owner/one', 'Reworked the parser.', true)
     expect(body).toContain('Closes #12')
     expect(body).toContain('owner/one')
     expect(body).toContain('Reworked the parser.')
+    // Without the switch the Issue stays open for a person to close, so the body must not close it implicitly.
+    expect(pullBody(12, 'owner/one', 'Reworked the parser.')).not.toContain('Closes #12')
   })
   it('leaves the summary out when there is none', () => {
     expect(pullBody(12, 'owner/one', '  ')).not.toMatch(/\n\n\n/)
@@ -103,15 +105,7 @@ const delivery = (state: Parameters<typeof fake>[0] = {}, patch: Record<string, 
 }
 const input = { repository: 'owner/one', issue: 12, branch: 'agent/issue-12', directory: '/srv/one', summary: 'Reworked the parser.' }
 
-describe('delivery safety guard', () => {
-  it('performs no external reads or writes before host validation and repository isolation exist', async () => {
-    const { deliver, calls } = delivery()
-    await expect(deliver.deliver(input)).rejects.toThrow('Automatic delivery is disabled')
-    expect(calls).toEqual([])
-  })
-})
-
-describe.skip('delivery pending verified implementation', () => {
+describe('delivery', () => {
   it('pushes the branch, opens a pull request and merges it when every requirement holds', async () => {
     const { deliver, calls } = delivery()
     const result = await deliver.deliver(input)
@@ -160,8 +154,18 @@ describe.skip('delivery pending verified implementation', () => {
   })
   it('merges once the required approval is present', async () => {
     const { deliver } = delivery({ protection: { required_pull_request_reviews: { required_approving_review_count: 1 } },
-      reviews: [{ state: 'APPROVED' }] })
+      reviews: [{ state: 'APPROVED', user: { login: 'alice' } }] })
     expect((await deliver.deliver(input)).mergeSha).toBe('merge-sha')
+  })
+  it('counts each reviewer once, so one approval is not two', async () => {
+    const { deliver } = delivery({ protection: { required_pull_request_reviews: { required_approving_review_count: 2 } },
+      reviews: [{ state: 'APPROVED', user: { login: 'alice' } }, { state: 'APPROVED', user: { login: 'alice' } }] })
+    expect((await deliver.deliver(input)).blocked).toBe('the repository requires 2 approving review(s); it has 1')
+  })
+  it('does not count a reviewer who approved and later requested changes', async () => {
+    const { deliver } = delivery({ protection: { required_pull_request_reviews: { required_approving_review_count: 1 } },
+      reviews: [{ state: 'APPROVED', user: { login: 'alice' } }, { state: 'CHANGES_REQUESTED', user: { login: 'alice' } }] })
+    expect((await deliver.deliver(input)).blocked).toBe('the repository requires 1 approving review(s); it has 0')
   })
   it('treats an unprotected branch as requiring nothing, and a failed protection read as no permission', async () => {
     const open = delivery({ fail: path => path.includes('/protection') ? new CliError('Not Found', 404) : undefined })

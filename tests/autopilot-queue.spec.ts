@@ -1,5 +1,5 @@
 // The autopilot's durable queue, its poller, and its scheduler, on a real Store and a fake GitHub CLI.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -222,41 +222,39 @@ describe('autopilot poller', () => {
 })
 
 describe('autopilot scheduler safety guard', () => {
-  it('reaches no checkout check while dispatch is disabled, so nothing can run in a wrong repository', async () => {
+  it('refuses to dispatch a job whose checkout is not its own repository, and records why', async () => {
     const queue = new AutopilotQueue(store)
     queue.enqueue({ repository: 'owner/one', repositoryId: 11, issue: 7, state: 'queued' })
     const receive = vi.fn()
     const trigger = vi.fn()
-    const verify = vi.fn()
+    const checkout = join(dir, 'checkout')
+    mkdirSync(join(checkout, '.git'), { recursive: true })
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver: vi.fn(), facts: vi.fn(), verify,
-      checkout: () => '/srv/one', locks: new JobLocks(), paused: () => false, closing: () => false })
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver: vi.fn(), facts: vi.fn(),
+      verify: async () => { throw new Error('another repository') }, checkout: () => checkout,
+      locks: new JobLocks(), paused: () => false, closing: () => false })
     const result = await pass.pass()
     expect(result.started).toEqual([])
-    // Dispatch is disabled, so the checkout check is never reached and no work can start anywhere.
-    expect(verify).not.toHaveBeenCalled()
+    expect(result.errors.map(item => item.error)).toEqual(['another repository'])
+    // Nothing was handed to the Engine, and the job records why it could not start.
     expect(receive).not.toHaveBeenCalled()
     expect(trigger).not.toHaveBeenCalled()
-    expect(queue.get(11, 7)).toMatchObject({ state: 'queued', error: expect.stringContaining('Dispatch disabled') })
+    expect(queue.get(11, 7)).toMatchObject({ state: 'failed', error: 'another repository' })
   })
-  it('does not create a trigger or deliver while repository isolation is unverified', async () => {
+  it('starts nothing while the autopilot is off, so a queued job waits rather than running', async () => {
     const queue = new AutopilotQueue(store)
     queue.enqueue({ repository: 'owner/one', repositoryId: 11, issue: 7, state: 'queued' })
     const receive = vi.fn()
-    const trigger = vi.fn()
-    const deliver = vi.fn()
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts: vi.fn(), verify: vi.fn(), checkout: () => '/srv/one',
-      locks: new JobLocks(), paused: () => false, closing: () => false })
-    store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
+    store.saveSettings(SettingsSchema.parse({ autopilot: settings({ enabled: false }) }))
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger: vi.fn(), deliver: vi.fn(), facts: vi.fn(), verify: vi.fn(),
+      checkout: () => join(dir, 'checkout'), locks: new JobLocks(), paused: () => false, closing: () => false })
     expect((await pass.pass()).started).toEqual([])
-    expect(queue.get(11, 7)).toMatchObject({ state: 'queued', error: expect.stringContaining('Dispatch disabled') })
     expect(receive).not.toHaveBeenCalled()
-    expect(trigger).not.toHaveBeenCalled()
-    expect(deliver).not.toHaveBeenCalled()
+    expect(queue.get(11, 7)?.state).toBe('queued')
   })
 })
 
-describe.skip('autopilot scheduler pending verified implementation', () => {
+describe('autopilot scheduler', () => {
   /** Records the accept Decision and the Ticket it created, as the Engine does when the main Session accepts. */
   const acceptTicket = (ticketId: string, triggerId: string) => {
     store.decisions.save({ id: `d-${ticketId}`, evalId: `e-${ticketId}`, threadKey: 'github:7', triggerIds: [triggerId], policyVersion: 'v',
@@ -282,9 +280,11 @@ describe.skip('autopilot scheduler pending verified implementation', () => {
     const queue = new AutopilotQueue(store)
     // The Engine stores a Trigger as it receives it, which is what the scheduler reads back.
     const receive = vi.fn((value: Trigger) => { store.triggers.save(value); return 'stored' })
-    // The locks are real files under the test's temporary directory, so a second holder is refused as it is in production.
+    // The locks are real files inside a checkout, so a second holder is refused as it is in production.
+    const checkout = join(dir, 'checkout')
+    mkdirSync(join(checkout, '.git'), { recursive: true })
     const locks = new JobLocks()
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts, verify: async () => {}, checkout: () => '/srv/one', locks,
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts, verify: async () => {}, checkout: () => checkout, locks,
       paused: () => false, closing: () => false })
     store.saveSettings(SettingsSchema.parse({ autopilot: settings(patch) }))
     return { queue, pass, receive, locks }
@@ -400,7 +400,7 @@ describe.skip('autopilot scheduler pending verified implementation', () => {
       prNumber: 5, prUrl: 'https://github.com/owner/one/pull/5', mergeSha: 'merge-sha' })
   })
   it('delivers only once, so a repeated pass opens no second pull request', async () => {
-    const deliver = vi.fn(async () => ({ pushed: true, prNumber: 5 }))
+    const deliver = vi.fn(async () => ({ pushed: true, prNumber: 5, mergeSha: 'merge-sha' }))
     const { queue, pass } = scheduler({}, undefined, deliver)
     queue.enqueue({ repository: 'owner/one', repositoryId: 11, issue: 7, state: 'queued' })
     await pass.pass()
@@ -465,9 +465,9 @@ describe.skip('autopilot scheduler pending verified implementation', () => {
   it('starts no job whose lock another holder keeps', async () => {
     const { queue, pass, receive } = scheduler()
     queue.enqueue({ repository: 'owner/one', repositoryId: 11, issue: 7, state: 'queued' })
-    // Another process holds the job's lock, so this pass leaves it for a later one.
+    // Another process holds the job's lock in the same checkout, so this pass leaves it for a later one.
     const other = new JobLocks()
-    expect(other.tryAcquire(11, 7, '/srv/one')).toBeDefined()
+    expect(other.tryAcquire(11, 7, join(dir, 'checkout'))).toBeDefined()
     expect((await pass.pass()).started).toEqual([])
     expect(receive).not.toHaveBeenCalled()
     expect(queue.get(11, 7)?.state).toBe('queued')

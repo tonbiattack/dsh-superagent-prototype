@@ -52,9 +52,8 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'autopilot' | 'source', Bl
     // All autopilot settings affect authorization or execution and are panel-only.
     guard: (current, candidate, origin) => {
       if (origin !== 'panel' && autopilotScope(current) !== autopilotScope(candidate)) throw new UserError('panelOnlyAutopilot')
-      if (candidate.autopilot.enabled && !current.autopilot.enabled) {
-        throw new UserError('autopilotUnavailable')
-      }
+      // Enabling it without a validation command would let delivery run on nothing, so the panel refuses that combination.
+      if (candidate.autopilot.enabled && !candidate.autopilot.validationCommand.trim()) throw new UserError('autopilotNoValidation')
     },
   },
   source: {

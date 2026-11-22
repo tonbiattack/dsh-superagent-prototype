@@ -795,6 +795,7 @@ const TEXT = {
   'userError.panelOnlyEnvironment': ['执行环境（执行目录、准备命令、禁止调用的命令）只能在管理页修改。', USER_ERRORS.panelOnlyEnvironment[1]],
   'userError.panelOnlyAutopilot': ['自动实现的设置只能在管理页修改。', USER_ERRORS.panelOnlyAutopilot[1]],
   'userError.autopilotUnavailable': ['自动实现尚未完成仓库隔离和交付验证，不能启用。', USER_ERRORS.autopilotUnavailable[1]],
+  'userError.autopilotNoValidation': ['启用自动实现前必须填写验证命令，因为交付由 dsh-superagent 自己运行它。', USER_ERRORS.autopilotNoValidation[1]],
   'userError.panelOnlyAccounts': ['部署检查读取的来源字段（例如账号 CLI）只能在管理页修改。', USER_ERRORS.panelOnlyAccounts[1]],
   'userError.setupComplete': ['部署检查已通过。', USER_ERRORS.setupComplete[1]],
   'userError.modelUnavailable': ['{block} 的模型不可用：{error}', USER_ERRORS.modelUnavailable[1]],

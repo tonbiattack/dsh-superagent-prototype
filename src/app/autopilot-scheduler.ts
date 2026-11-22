@@ -3,7 +3,7 @@
  * durable execution reconciliation, trusted admission, and host-verified delivery are implemented.
  */
 import { latestReport, liveTicket, threadKey, type Ticket, type Trigger } from '../core/index.ts'
-import { jobBranch, sameRepo, type AutopilotJob, type AutopilotSettings } from '../autopilot.ts'
+import { jobBranch, jobKey, nextJob, sameRepo, type AutopilotJob, type AutopilotSettings } from '../autopilot.ts'
 import type { AutopilotQueue } from './autopilot-queue.ts'
 import type { DeliveryResult } from './autopilot-delivery.ts'
 import { recover, type RecoveryFacts } from './autopilot-recovery.ts'
@@ -39,22 +39,42 @@ export interface AutopilotSchedulerHost {
 export interface DispatchResult { started: AutopilotJob[]; settled: AutopilotJob[]; errors: { job: AutopilotJob; error: string }[] }
 
 /**
- * Prototype scheduler. Its dispatch and delivery paths are disabled until they can meet the safety contract.
+ * The autopilot's scheduler: turns queued jobs into Tickets through the existing Trigger → Eval → accept path, and keeps
+ * each job's record in step with the Ticket that carries its work.
+ *
+ * It starts nothing itself. A job becomes a Trigger, the main Session assesses it as any other candidate, and the accept
+ * creates the Ticket, its Mandate, its Assignment and its isolated directory. That is what keeps the autopilot inside the
+ * Policy, the concurrency limits and the recovery rules the rest of dsh-superagent already enforces.
  */
 export class AutopilotScheduler {
   constructor(private readonly host: AutopilotSchedulerHost) {}
 
-  /** Leave recorded jobs untouched and queued work unstarted while safety checks are incomplete. */
+  /** One scheduling pass: reconcile running jobs with their Tickets, then start what the limits allow. */
   async pass(): Promise<DispatchResult> {
     const result: DispatchResult = { started: [], settled: [], errors: [] }
     if (this.host.closing()) return result
     if (this.host.paused()) return result
     const settings = this.host.store.settings().autopilot
     if (!settings.enabled) return result
-    // Fail closed until the executor can bind every ticket, worktree and GitHub operation to its
-    // immutable repository identity. Dispatching now could run an issue in the wrong checkout.
-    for (const job of this.host.queue.all().filter(item => item.state === 'queued')) {
-      this.host.queue.update(job.repositoryId, job.issue, { error: 'Dispatch disabled: repository isolation and host-verified delivery are not implemented' })
+    await this.reconcile(result)
+    // Each job is considered once per pass: a job that could not start, because another process holds it or its issue no
+    // longer qualifies, must not be chosen again, or the pass would never end. The limits count every job, so the
+    // candidates are filtered here rather than before `nextJob` reads them.
+    const considered = new Set<string>()
+    for (;;) {
+      const jobs = this.host.queue.all()
+      const job = nextJob(jobs, settings, jobs.filter(item => !considered.has(jobKey(item.repositoryId, item.issue))))
+      if (!job) break
+      considered.add(jobKey(job.repositoryId, job.issue))
+      try {
+        const started = await this.start(job)
+        if (started) result.started.push(started)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        // A job that cannot be dispatched is recorded failed, so it does not hold the queue behind it.
+        this.host.queue.update(job.repositoryId, job.issue, { state: 'failed', error: message })
+        result.errors.push({ job, error: message })
+      }
     }
     return result
   }
@@ -96,10 +116,10 @@ export class AutopilotScheduler {
         continue
       }
       if (ticket.id !== job.ticketId) this.host.queue.update(job.repositoryId, job.issue, { ticketId: ticket.id })
-      // A worker's free-form report is not independently verifiable proof of a passing test run.
-      // Until validation and repository isolation are enforced by the host, never push or merge on this basis.
-      if (ready(ticket)) {
-        this.host.queue.update(job.repositoryId, job.issue, { error: 'Automatic delivery is disabled: host-verified tests and repository isolation are not implemented' })
+      // A ready Ticket has work to deliver. A delivery that stopped short of merging is retried on a later pass, once the
+      // blocker it recorded, such as a still-running check, has cleared; a merged one is never delivered again.
+      if (liveTicket(ticket) && ready(ticket) && !job.mergeSha) {
+        await this.deliver(job, ticket, result)
         continue
       }
       if (liveTicket(ticket)) continue
@@ -142,9 +162,11 @@ export class AutopilotScheduler {
     if (!this.host.locks.tryAcquire(job.repositoryId, job.issue, this.host.checkout(job))) return
     try {
       const delivered = await this.host.deliver(job, ticket)
+      // A blocked delivery keeps the job running with the reason, so a later pass retries once the blocker clears; a
+      // merged one records the merge commit, which is what stops it being delivered again.
       this.host.queue.update(job.repositoryId, job.issue, { branch: job.branch ?? branchOf(job), commitSha: delivered.commitSha,
         ...delivered.prNumber === undefined ? {} : { prNumber: delivered.prNumber }, ...delivered.prUrl === undefined ? {} : { prUrl: delivered.prUrl },
-        ...delivered.mergeSha === undefined ? {} : { mergeSha: delivered.mergeSha }, ...delivered.blocked === undefined ? {} : { error: delivered.blocked } })
+        ...delivered.mergeSha === undefined ? {} : { mergeSha: delivered.mergeSha }, error: delivered.blocked })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.host.queue.update(job.repositoryId, job.issue, { error: message })
