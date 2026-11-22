@@ -29,6 +29,9 @@ Read the numbered documents in order; each builds only on the ones before it.
 - [006 Deployment](docs/006-deployment.md): manual setup, configuration, upgrades and troubleshooting
 - [007 Architecture](docs/007-architecture.md)
 - [008 Cookbook](docs/008-cookbook.md): adding a Source
+- [009 Issue autopilot](docs/009-issue-autopilot-fork.md): the fork's specification for implementing labelled Issues
+- [011 Windows + WSL2](docs/011-windows-wsl.md): running it on a Windows workstation
+- [012 Issue autopilot usage](docs/012-issue-autopilot-usage.md): how to use the autopilot day to day (Japanese)
 
 ## Development
 
