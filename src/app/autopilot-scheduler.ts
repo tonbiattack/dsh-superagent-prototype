@@ -8,6 +8,7 @@ import type { AutopilotQueue } from './autopilot-queue.ts'
 import type { DeliveryResult } from './autopilot-delivery.ts'
 import { recover, type RecoveryFacts } from './autopilot-recovery.ts'
 import type { JobLocks } from './autopilot-locks.ts'
+import type { SessionLocks } from './autopilot-session-locks.ts'
 import type { RouteDecision } from './autopilot-routing.ts'
 import type { Store } from './store.ts'
 
@@ -32,6 +33,15 @@ export interface AutopilotSchedulerHost {
    * wait when nothing safe exists.
    */
   route(job: AutopilotJob): Promise<RouteDecision>
+  /**
+   * Prepares the job's own worktree on its branch, so its changes never mix with a person's checkout.
+   * @returns the directory to work in, or a reason the job must wait.
+   */
+  worktree(job: AutopilotJob, checkout: string): Promise<{ kind: 'ready'; path: string } | { kind: 'wait'; reason: string }>
+  /** Holds one session's lock while a job works in it, so two jobs never share one conversation. */
+  readonly sessionLocks: Pick<SessionLocks, 'tryAcquire' | 'release'>
+  /** The session a job would reuse, or undefined when it gets its own. */
+  session(job: AutopilotJob): string | undefined
   /**
    * Proves that the job's work will run in its own repository's checkout.
    * @throws when the checkout is missing or belongs to another repository, so work never lands in the wrong one.
@@ -96,19 +106,33 @@ export class AutopilotScheduler {
       this.host.queue.update(job.repositoryId, job.issue, { error: route.reason })
       return undefined
     }
+    // The job works in its own worktree, so its changes never mix with the checkout a person is working in.
+    const worktree = await this.host.worktree(job, route.path)
+    if (worktree.kind === 'wait') {
+      this.host.queue.update(job.repositoryId, job.issue, { error: worktree.reason })
+      return undefined
+    }
     // One process runs a job at a time; a job another process holds, or whose checkout cannot hold a lock, waits.
     if (!this.host.locks.tryAcquire(job.repositoryId, job.issue, route.path)) return undefined
+    // A reused session holds one conversation, so a second job in it would interleave with the first.
+    const sessionId = this.host.session(job)
+    if (sessionId !== undefined && !this.host.sessionLocks.tryAcquire(sessionId)) {
+      await this.host.locks.release(job.repositoryId, job.issue)
+      return undefined
+    }
     // The work must run in this repository's own checkout, proven before anything is dispatched.
     await this.host.verify(job)
     const trigger = await this.host.trigger(job)
     if (!trigger) {
       this.host.queue.update(job.repositoryId, job.issue, { state: 'skipped', error: 'the issue is no longer open or no longer carries the label' })
       await this.host.locks.release(job.repositoryId, job.issue)
+      if (sessionId !== undefined) await this.host.sessionLocks.release(sessionId)
       return undefined
     }
     // The attempt is counted before the Trigger is handed over, so a crash between the two cannot retry without bound.
     this.host.queue.update(job.repositoryId, job.issue, { state: 'running', triggerId: trigger.id, attempts: job.attempts + 1,
-      error: undefined, route: { kind: route.kind, path: route.path, ...route.kind === 'workspace' ? { title: route.title } : {},
+      error: undefined, ...sessionId === undefined ? {} : { sessionId },
+      route: { kind: route.kind, path: worktree.path, ...route.kind === 'workspace' ? { title: route.title } : {},
         reason: route.reason } })
     this.host.receive(trigger)
     return this.host.queue.get(job.repositoryId, job.issue)
@@ -142,8 +166,10 @@ export class AutopilotScheduler {
       const state = outcome === 'completed' || outcome === 'merged' ? 'done' : outcome === 'dropped' ? 'skipped' : 'failed'
       const error = state === 'failed' ? ticket.ended?.reason ?? `the ticket ended ${outcome ?? 'without a result'}` : undefined
       this.host.queue.update(job.repositoryId, job.issue, { state, ...error === undefined ? {} : { error } })
-      // A settled job holds no lock: its work is over, and the next issue may start at once.
+      // A settled job holds no lock: its work is over, and the next issue may start at once. Its session is freed too, so
+      // the next job may reuse it.
       await this.host.locks.release(job.repositoryId, job.issue)
+      if (job.sessionId !== undefined) await this.host.sessionLocks.release(job.sessionId)
       result.settled.push(this.host.queue.get(job.repositoryId, job.issue)!)
     }
   }

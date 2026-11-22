@@ -57,6 +57,8 @@ import { defaultBranchOf } from './autopilot-poller.ts'
 import { workspaceRoot, verifyCheckout } from './autopilot-workspace.ts'
 import { chooseWorkspace, type RouteDecision, type WorkspaceCandidate } from './autopilot-routing.ts'
 import { chooseSession, repositorySessionId, type SessionCandidate } from './autopilot-session.ts'
+import { SessionLocks } from './autopilot-session-locks.ts'
+import { ensureWorktree, worktreeBranch, worktreePath } from './autopilot-worktree.ts'
 import { validate } from './autopilot-validation.ts'
 import { autopilotTrigger } from '../sources/github-trigger.ts'
 import { readIssue } from '../sources/github-read.ts'
@@ -88,6 +90,8 @@ export class Runtime extends Service implements SourceHost {
   readonly passes: Passes
   readonly autopilotQueue: AutopilotQueue
   readonly autopilotLocks: JobLocks
+  /** The lock that keeps two jobs out of one reused DSH session. */
+  readonly autopilotSessionLocks: SessionLocks
   readonly autopilot: Autopilot
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
@@ -187,13 +191,15 @@ export class Runtime extends Service implements SourceHost {
       // The prototype can inspect issues through each scoped gh transport. Dispatch remains disabled until isolation is proven.
       const queue = this.autopilotQueue = new AutopilotQueue(store)
       const locks = this.autopilotLocks = new JobLocks()
+      const sessionLocks = this.autopilotSessionLocks = new SessionLocks(join(machine.stateDir, 'autopilot-sessions'))
       const poller = new AutopilotPoller({ store, queue, commands: repository => commands.forRepository(repository),
         allowed: () => (store.settings().policy.sources.github?.allowed ?? []).map(entry => entry.id),
         settings: () => store.settings().autopilot })
-      const scheduler = new AutopilotScheduler({ store, queue, locks, receive: trigger => passes.receive(trigger),
+      const scheduler = new AutopilotScheduler({ store, queue, locks, sessionLocks, receive: trigger => passes.receive(trigger),
         trigger: job => this.autopilotTrigger(job), deliver: (job, ticket) => this.autopilotDeliver(job, ticket),
         verify: job => this.autopilotVerify(job), checkout: job => this.autopilotCheckout(job),
-        route: job => this.autopilotRoute(job),
+        route: job => this.autopilotRoute(job), worktree: (job, checkout) => this.autopilotWorktree(job, checkout),
+        session: job => this.autopilotSessionId(job),
         facts: (job, ticket) => this.autopilotFacts(job, ticket), paused: () => this.paused(), closing: () => this.closing() })
       this.autopilot = new Autopilot({ store, queue, poller, scheduler, health: board.claim('autopilot'),
         lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing(),
@@ -277,16 +283,29 @@ export class Runtime extends Service implements SourceHost {
   private autopilotSession(ticket: Ticket): string | undefined {
     const job = this.autopilotQueue.all().find(item => item.ticketId === ticket.id)
     if (!job) return undefined
+    return job.sessionId
+  }
+  /**
+   * Prepares the job's own worktree on its branch, so its changes never mix with the checkout a person is working in.
+   * A checkout with uncommitted changes is refused rather than used, because a worktree created from it would carry a
+   * person's unfinished work into the job.
+   */
+  private async autopilotWorktree(job: AutopilotJob, checkout: string): Promise<{ kind: 'ready'; path: string } | { kind: 'wait'; reason: string }> {
+    const path = worktreePath(this.machine.stateDir, job.repositoryId, job.issue)
+    const branch = worktreeBranch(job.issue)
+    const state = await ensureWorktree(this.commands.forRepository(job.repository), { checkout, path, branch })
+    return state.kind === 'dirty' ? { kind: 'wait', reason: state.reason } : { kind: 'ready', path: state.path }
+  }
+  /** The session a job would reuse, or undefined when it gets its own. */
+  private autopilotSessionId(job: AutopilotJob): string | undefined {
     const settings = this.store.settings().autopilot
     if (settings.sessionReuse === 'off') return undefined
     const directory = job.route?.path ?? this.autopilotCheckout(job)
-    // Only sessions that run in this job's own directory are candidates, so another repository's session is never used.
     const candidates: SessionCandidate[] = []
     for (const workspace of this.ctx.workspaceRegistry?.list?.() ?? []) {
       if (workspace.path !== directory) continue
       for (const id of workspace.sessionIds) {
-        const agent = this.ctx.agents.get(id)
-        candidates.push({ id, cwd: workspace.path, busy: agent?.status === 'running', owned: id.startsWith('autopilot-repo-') })
+        candidates.push({ id, cwd: workspace.path, busy: this.ctx.agents.get(id)?.status === 'running', owned: id.startsWith('autopilot-repo-') })
       }
     }
     const choice = chooseSession({ candidates, own: repositorySessionId(job.repositoryId), settings })
@@ -405,6 +424,7 @@ export class Runtime extends Service implements SourceHost {
       await this.autopilot.stop()
       // Its job locks are files, which a crash would leave stale; releasing them lets the next process start at once.
       await this.autopilotLocks.releaseAll()
+      await this.autopilotSessionLocks.releaseAll()
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
       this.executor.dispose()

@@ -8,6 +8,7 @@ import { AutopilotQueue } from '../src/app/autopilot-queue.ts'
 import { AutopilotPoller, eligibleIssue, labelNames } from '../src/app/autopilot-poller.ts'
 import { AutopilotScheduler } from '../src/app/autopilot-scheduler.ts'
 import { JobLocks } from '../src/app/autopilot-locks.ts'
+import { SessionLocks } from '../src/app/autopilot-session-locks.ts'
 import type { RecoveryFacts } from '../src/app/autopilot-recovery.ts'
 import type { DeliveryResult } from '../src/app/autopilot-delivery.ts'
 import { AutopilotConfigSchema, SettingsSchema } from '../src/policy.ts'
@@ -256,7 +257,7 @@ describe('autopilot scheduler safety guard', () => {
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
     const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver: vi.fn(), facts: vi.fn(),
       verify: async () => { throw new Error('another repository') }, checkout: () => checkout,
-      route: async () => ({ kind: 'checkout', path: checkout, reason: 'test' }),
+      route: async () => ({ kind: 'checkout', path: checkout, reason: 'test' }), worktree: async () => ({ kind: 'ready', path: checkout }), sessionLocks: new SessionLocks(join(dir, 'sessions')), session: () => undefined,
       locks: new JobLocks(), paused: () => false, closing: () => false })
     const result = await pass.pass()
     expect(result.started).toEqual([])
@@ -272,7 +273,7 @@ describe('autopilot scheduler safety guard', () => {
     const receive = vi.fn()
     store.saveSettings(SettingsSchema.parse({ autopilot: settings({ enabled: false }) }))
     const pass = new AutopilotScheduler({ store, queue, receive, trigger: vi.fn(), deliver: vi.fn(), facts: vi.fn(), verify: vi.fn(),
-      checkout: () => join(dir, 'checkout'), route: async () => ({ kind: 'checkout', path: join(dir, 'checkout'), reason: 'test' }),
+      checkout: () => join(dir, 'checkout'), route: async () => ({ kind: 'checkout', path: join(dir, 'checkout'), reason: 'test' }), worktree: async () => ({ kind: 'ready', path: join(dir, 'checkout') }), sessionLocks: new SessionLocks(join(dir, 'sessions')), session: () => undefined,
       locks: new JobLocks(), paused: () => false, closing: () => false })
     expect((await pass.pass()).started).toEqual([])
     expect(receive).not.toHaveBeenCalled()
@@ -310,7 +311,7 @@ describe('autopilot scheduler', () => {
     const checkout = join(dir, 'checkout')
     mkdirSync(join(checkout, '.git'), { recursive: true })
     const locks = new JobLocks()
-    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts, verify: async () => {}, checkout: () => checkout, route: async () => ({ kind: 'checkout', path: checkout, reason: 'test' }), locks,
+    const pass = new AutopilotScheduler({ store, queue, receive, trigger, deliver, facts, verify: async () => {}, checkout: () => checkout, route: async () => ({ kind: 'checkout', path: checkout, reason: 'test' }), worktree: async () => ({ kind: 'ready', path: checkout }), sessionLocks: new SessionLocks(join(dir, 'sessions')), session: () => undefined, locks,
       paused: () => false, closing: () => false })
     store.saveSettings(SettingsSchema.parse({ autopilot: settings(patch) }))
     return { queue, pass, receive, locks }
@@ -328,7 +329,7 @@ describe('autopilot scheduler', () => {
     const receive = vi.fn()
     store.saveSettings(SettingsSchema.parse({ autopilot: settings() }))
     const pass = new AutopilotScheduler({ store, queue, receive, trigger: async () => undefined, deliver: async () => ({ pushed: false }),
-      facts: async () => ({ ticket: false, open: false, branch: false, commitLanded: false }), verify: async () => {}, checkout: () => '/srv/one', route: async () => ({ kind: 'checkout', path: '/srv/one', reason: 'test' }),
+      facts: async () => ({ ticket: false, open: false, branch: false, commitLanded: false }), verify: async () => {}, checkout: () => '/srv/one', route: async () => ({ kind: 'checkout', path: '/srv/one', reason: 'test' }), worktree: async () => ({ kind: 'ready', path: '/srv/one' }), sessionLocks: new SessionLocks(join(dir, 'sessions')), session: () => undefined,
       locks: new JobLocks(), paused: () => true, closing: () => false })
     queue.enqueue({ repository: 'owner/one', repositoryId: 11, issue: 7, state: 'queued' })
     expect((await pass.pass()).started).toEqual([])
